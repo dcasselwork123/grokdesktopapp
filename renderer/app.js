@@ -1574,6 +1574,86 @@
   }
 
   // ---------- Setup gate (Install CLI / Sign in) ----------
+  /**
+   * Prefer /api/setup. If the running desktop process is older than the static UI
+   * (no /api/setup yet → 404 "Not found"), fall back to /api/health so phone access
+   * keeps working until the PC app is fully restarted.
+   */
+  async function fetchSetupStatus() {
+    try {
+      return await api("/api/setup");
+    } catch (err) {
+      const msg = String(err && err.message ? err.message : err);
+      try {
+        const health = await api("/api/health");
+        return synthesizeSetupFromHealth(health, {
+          setupError: msg,
+          setupEndpointMissing: /not\s*found/i.test(msg) || /\b404\b/.test(msg),
+        });
+      } catch (healthErr) {
+        const hmsg = String(
+          healthErr && healthErr.message ? healthErr.message : healthErr
+        );
+        const looksMissing = /not\s*found/i.test(msg) || /\b404\b/.test(msg);
+        throw new Error(looksMissing ? hmsg || msg || "Offline" : msg || hmsg || "Offline");
+      }
+    }
+  }
+
+  /**
+   * Map /api/health into the setup-gate shape used by renderSetupGate.
+   * New servers include ready/installed/authenticated; old ones only have ok/remote.
+   */
+  function synthesizeSetupFromHealth(health, meta = {}) {
+    if (!health || health.ok === false) {
+      return {
+        ready: false,
+        error: meta.setupError || "Health check failed",
+        installed: false,
+        auth: { present: false, valid: false, reason: "unknown", email: null },
+        login: { running: false },
+      };
+    }
+
+    // New health payload (post setup-gate): honor explicit flags
+    if (typeof health.ready === "boolean") {
+      return {
+        ready: !!health.ready,
+        installed: health.installed !== false,
+        grokBin: health.grokBin || null,
+        grokHome: health.grokHome || null,
+        platform: health.platform || null,
+        auth: {
+          present: !!(health.authenticated || health.authEmail || health.ready),
+          valid: !!(health.authenticated || health.ready),
+          reason: health.authenticated || health.ready ? "ok" : "missing",
+          email: health.authEmail || null,
+        },
+        login: { running: false },
+        fromHealth: true,
+      };
+    }
+
+    // Legacy server: no /api/setup and no ready flags — previous behavior was
+    // "health ok ⇒ app works". Don't block mobile behind a broken gate.
+    return {
+      ready: true,
+      installed: true,
+      grokBin: health.grokBin || null,
+      grokHome: health.grokHome || null,
+      platform: health.platform || null,
+      auth: {
+        present: true,
+        valid: true,
+        reason: "ok",
+        email: health.authEmail || null,
+      },
+      login: { running: false },
+      fromHealth: true,
+      legacyServer: true,
+    };
+  }
+
   function stopLoginPoll() {
     if (state.loginPollTimer) {
       clearInterval(state.loginPollTimer);
@@ -1666,7 +1746,9 @@
         message:
           (setup && setup.error) ||
           "The app backend didn’t respond. Restart Grok Desktop and try again.",
-        hint: "",
+        hint:
+          setup?.hintExtra ||
+          "Fully quit Grok Desktop on the PC, relaunch it, then reload this page. Use the phone URL from 📱 (includes <code>?token=…</code>).",
         actions: [
           {
             label: "Retry",
@@ -1835,7 +1917,7 @@
     stopLoginPoll();
     state.loginPollTimer = setInterval(async () => {
       try {
-        const setup = await api("/api/setup");
+        const setup = await fetchSetupStatus();
         if (setup.ready) {
           stopLoginPoll();
           state.setupReady = true;
@@ -1868,7 +1950,7 @@
         method: "POST",
         body: JSON.stringify({ oauth: true }),
       });
-      const setup = await api("/api/setup");
+      const setup = await fetchSetupStatus();
       renderSetupGate(setup);
       if (!setup.ready) startLoginPoll();
       else {
@@ -1880,7 +1962,7 @@
       setSetupChrome({
         title: "Sign in with Grok",
         message: err.message || "Could not start login.",
-        hint: "You can also run <code>grok login</code> in a terminal, then Recheck.",
+        hint: "You can also run <code>grok login</code> in a terminal, then Recheck. If this just updated, fully quit and relaunch Grok Desktop on the PC.",
         actions: [
           {
             label: "Try again",
@@ -1899,6 +1981,7 @@
   }
 
   let bootContinued = false;
+  let sessionRefreshTimer = null;
 
   async function continueBootAfterSetup(setup) {
     if (bootContinued) {
@@ -1941,9 +2024,11 @@
     await refreshSessions();
     startNewSession();
 
-    setInterval(() => {
-      if (!state.running && state.setupReady) refreshSessions();
-    }, 30000);
+    if (!sessionRefreshTimer) {
+      sessionRefreshTimer = setInterval(() => {
+        if (!state.running && state.setupReady) refreshSessions();
+      }, 30000);
+    }
   }
 
   async function checkSetupAndBoot({ force = false } = {}) {
@@ -1957,7 +2042,7 @@
     setStatus(null, "Checking…");
 
     try {
-      const setup = await api("/api/setup");
+      const setup = await fetchSetupStatus();
       state.setup = setup;
       if (setup.ready) {
         state.setupReady = true;
@@ -1969,7 +2054,13 @@
       renderSetupGate(setup);
       return setup;
     } catch (err) {
-      renderSetupGate({ error: err.message || "Offline", ready: false });
+      const detail = err.message || "Offline";
+      renderSetupGate({
+        error: detail,
+        ready: false,
+        hintExtra:
+          "If you just updated the app, fully quit Grok Desktop on the PC and relaunch (double-click Start Grok Desktop), then reload this page.",
+      });
       return null;
     }
   }

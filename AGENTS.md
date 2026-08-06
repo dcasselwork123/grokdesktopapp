@@ -6,6 +6,17 @@
 
 Do not re-scaffold the app from scratch. Do not assume npm-only workflows when the user prefers double-click launchers. Prefer small, targeted edits to the existing Electron + Node server + renderer layout.
 
+### Source of truth (git)
+
+| | |
+|--|--|
+| **Main / canonical repo** | https://github.com/dcasselwork123/grokdesktopapp |
+| **Local workspace** | `C:\Dev\GrokDesktop` (tracks `origin/main` on that repo) |
+
+That GitHub repo is the **main repo** for this project. Treat it as the only remote source of truth unless the user says otherwise.
+
+**Push policy:** Do **not** `git push`, force-push, open PRs, or otherwise publish to GitHub unless the user **explicitly** asks you to (e.g. “push this”, “push to GitHub”). Local commits are fine when the user asks to commit; remote publish always needs explicit approval.
+
 ---
 
 ## What this app is
@@ -207,4 +218,6 @@ UI (Electron or Safari)
 6. **Images:** save to disk + pass paths via `-p` (vision through tools). Avoid large `--prompt-json` base64 on Windows/Electron.
 7. **Folder change = new chat** when cwd differs from the active session — don’t silently resume the old session in a new directory.
 8. **Keep the setup gate** (install CLI / Sign in with Grok). Don’t reintroduce silent CLI/auth failures for fresh clones.
+9. **Main repo** is https://github.com/dcasselwork123/grokdesktopapp — **only push when the user explicitly approves.**
+
 )
