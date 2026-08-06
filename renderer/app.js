@@ -1,0 +1,1989 @@
+"use strict";
+
+(() => {
+  const $ = (sel) => document.querySelector(sel);
+
+  const els = {
+    sessionList: $("#session-list"),
+    btnNew: $("#btn-new"),
+    btnRefresh: $("#btn-refresh"),
+    btnSend: $("#btn-send"),
+    btnStop: $("#btn-stop"),
+    btnRemote: $("#btn-remote-info"),
+    btnCwdBrowse: $("#btn-cwd-browse"),
+    btnAttach: $("#btn-attach"),
+    fileAttach: $("#file-attach"),
+    attachStrip: $("#attach-strip"),
+    prompt: $("#prompt"),
+    messages: $("#messages"),
+    chatTitle: $("#chat-title"),
+    chatProject: $("#chat-project"),
+    modelSelect: $("#model-select"),
+    effortSlider: $("#effort-slider"),
+    effortValue: $("#effort-value"),
+    cwdInput: $("#cwd-input"),
+    sessionIdHint: $("#session-id-hint"),
+    runningBar: $("#running-bar"),
+    runningText: $("#running-text"),
+    statusPill: $("#status-pill"),
+    statusDot: $("#status-dot"),
+    statusText: $("#status-text"),
+    modalBackdrop: $("#modal-backdrop"),
+    modalClose: $("#modal-close"),
+    sidebarToggle: $("#sidebar-toggle"),
+    folderPickerBackdrop: $("#folder-picker-backdrop"),
+    folderPickerList: $("#folder-picker-list"),
+    folderPickerEmpty: $("#folder-picker-empty"),
+    folderPickerCancel: $("#folder-picker-cancel"),
+    btnSelectMode: $("#btn-select-mode"),
+    bulkBar: $("#bulk-bar"),
+    bulkCount: $("#bulk-count"),
+    btnBulkArchive: $("#btn-bulk-archive"),
+    btnBulkDelete: $("#btn-bulk-delete"),
+    btnBulkCancel: $("#btn-bulk-cancel"),
+    contextMenu: $("#session-context-menu"),
+    setupGate: $("#setup-gate"),
+    setupTitle: $("#setup-title"),
+    setupMessage: $("#setup-message"),
+    setupDetails: $("#setup-details"),
+    setupInstallCmd: $("#setup-install-cmd"),
+    setupActions: $("#setup-actions"),
+    setupHint: $("#setup-hint"),
+  };
+
+  const state = {
+    sessions: [],
+    models: [],
+    efforts: [], // ordered low → high for the slider
+    activeSessionId: null,
+    activeProject: null,
+    running: false,
+    runId: null,
+    abortController: null,
+    token: null,
+    draftMode: true, // true until first message of a new chat
+    attachments: [], // { id, name, mimeType, dataUrl }
+    // Projects start collapsed; only ids in this set are expanded
+    expandedProjects: new Set(),
+    selectMode: false,
+    selectedIds: new Set(),
+    lastClickedSessionId: null,
+    contextSessionId: null,
+    // Setup gate: CLI installed + signed in
+    setupReady: false,
+    setup: null,
+    loginPollTimer: null,
+  };
+
+  // Preferred left→right order for the effort slider (unknown ids sort last)
+  const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
+
+  const MAX_ATTACHMENTS = 8;
+  // Keep attachments small so vision is fast and uploads stay reliable
+  const MAX_IMAGE_EDGE = 1280;
+  const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+
+  function isMobileViewport() {
+    return window.matchMedia("(max-width: 800px)").matches;
+  }
+
+  function isElectron() {
+    return !!(window.grokDesktop && window.grokDesktop.isElectron);
+  }
+
+  // ---------- Working folder (cwd) ----------
+  function setCwd(cwd) {
+    const value = (cwd || "").trim();
+    els.cwdInput.value = value;
+    els.cwdInput.title = value || "Choose working folder";
+  }
+
+  function getCwd() {
+    return els.cwdInput.value.trim();
+  }
+
+  /** Normalize for path equality (Windows-friendly: slashes + case). */
+  function normalizeCwd(p) {
+    if (!p) return "";
+    let s = String(p).trim().replace(/[\\/]+$/, "");
+    s = s.replace(/\//g, "\\");
+    return s;
+  }
+
+  function cwdsEqual(a, b) {
+    return normalizeCwd(a).toLowerCase() === normalizeCwd(b).toLowerCase();
+  }
+
+  function getActiveSession() {
+    if (!state.activeSessionId) return null;
+    return state.sessions.find((s) => s.id === state.activeSessionId) || null;
+  }
+
+  /**
+   * Apply a user-chosen working folder. If it differs from the current session's
+   * folder, start a fresh draft chat in the new folder (don't continue old chat).
+   */
+  function changeWorkingFolder(nextCwd) {
+    const next = (nextCwd || "").trim();
+    if (!next || state.running) return;
+
+    const session = getActiveSession();
+
+    // Same folder as the open session → keep chatting there
+    if (session && cwdsEqual(next, session.cwd)) {
+      setCwd(next);
+      return;
+    }
+
+    // Already a blank draft on this folder
+    if (!state.activeSessionId && state.draftMode && cwdsEqual(next, getCwd())) {
+      return;
+    }
+
+    // Different folder (or leaving an existing session) → new chat in that folder
+    startNewSession({ cwd: next });
+  }
+
+  /** Unique project folders from past sessions (for mobile picker). */
+  function listKnownWorkspaces() {
+    const map = new Map();
+    for (const s of state.sessions) {
+      const cwd = (s.cwd || "").trim();
+      if (!cwd || map.has(cwd)) continue;
+      map.set(cwd, {
+        cwd,
+        project: s.project || projectNameFromPath(cwd),
+      });
+    }
+    return [...map.values()].sort((a, b) =>
+      a.project.localeCompare(b.project, undefined, { sensitivity: "base" })
+    );
+  }
+
+  function projectNameFromPath(cwd) {
+    if (!cwd) return "Project";
+    const normalized = cwd.replace(/[\\/]+$/, "");
+    const parts = normalized.split(/[\\/]/);
+    return parts[parts.length - 1] || normalized;
+  }
+
+  async function browseFolderDesktop() {
+    if (!isElectron() || typeof window.grokDesktop.pickFolder !== "function") {
+      return;
+    }
+    try {
+      const chosen = await window.grokDesktop.pickFolder(getCwd() || undefined);
+      if (chosen) changeWorkingFolder(chosen);
+    } catch (err) {
+      console.warn("Folder picker failed:", err);
+    }
+  }
+
+  function openMobileFolderPicker() {
+    const workspaces = listKnownWorkspaces();
+    els.folderPickerList.innerHTML = "";
+
+    if (workspaces.length === 0) {
+      els.folderPickerEmpty.classList.remove("hidden");
+    } else {
+      els.folderPickerEmpty.classList.add("hidden");
+      for (const ws of workspaces) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "folder-picker-item";
+        btn.setAttribute("role", "option");
+        btn.innerHTML = `<span class="fp-name"></span><span class="fp-path"></span>`;
+        btn.querySelector(".fp-name").textContent = ws.project;
+        btn.querySelector(".fp-path").textContent = ws.cwd;
+        btn.addEventListener("click", () => {
+          closeMobileFolderPicker();
+          startNewSession({ cwd: ws.cwd });
+        });
+        els.folderPickerList.appendChild(btn);
+      }
+    }
+
+    els.folderPickerBackdrop.classList.remove("hidden");
+  }
+
+  function closeMobileFolderPicker() {
+    els.folderPickerBackdrop.classList.add("hidden");
+  }
+
+  // ---------- URL / token ----------
+  function readTokenFromUrl() {
+    const u = new URL(window.location.href);
+    const t = u.searchParams.get("token");
+    if (t) {
+      state.token = t;
+      try {
+        sessionStorage.setItem("grok_desktop_token", t);
+        localStorage.setItem("grok_desktop_token", t);
+      } catch {
+        /* ignore */
+      }
+      // Clean token out of the address bar (cookie now carries auth for assets/API).
+      try {
+        u.searchParams.delete("token");
+        const clean = u.pathname + (u.searchParams.toString() ? `?${u.searchParams}` : "") + u.hash;
+        window.history.replaceState({}, "", clean || "/");
+      } catch {
+        /* ignore */
+      }
+    } else {
+      try {
+        state.token =
+          sessionStorage.getItem("grok_desktop_token") ||
+          localStorage.getItem("grok_desktop_token");
+      } catch {
+        state.token = null;
+      }
+    }
+  }
+
+  function apiUrl(path) {
+    const u = new URL(path, window.location.origin);
+    if (state.token) u.searchParams.set("token", state.token);
+    return u.toString();
+  }
+
+  async function api(path, opts = {}) {
+    const headers = { ...(opts.headers || {}) };
+    if (state.token) headers["X-Grok-Token"] = state.token;
+    if (opts.body && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
+    const res = await fetch(apiUrl(path), { ...opts, headers });
+    if (!res.ok) {
+      let msg = res.statusText;
+      try {
+        const j = await res.json();
+        msg = j.error || msg;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(msg);
+    }
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return res.json();
+    return res;
+  }
+
+  // ---------- Status ----------
+  function setStatus(ok, text) {
+    els.statusPill.classList.toggle("ok", !!ok);
+    els.statusPill.classList.toggle("err", ok === false);
+    els.statusText.textContent = text;
+  }
+
+  // ---------- Models / effort ----------
+  function populateModels(models) {
+    state.models = models;
+    els.modelSelect.innerHTML = "";
+    for (const m of models) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.name || m.id;
+      els.modelSelect.appendChild(opt);
+    }
+    if (models[0]) {
+      els.modelSelect.value = models[0].id;
+      populateEfforts(models[0]);
+    }
+  }
+
+  function effortRank(e) {
+    const key = String(e.value || e.id || "").toLowerCase();
+    const idx = EFFORT_ORDER.indexOf(key);
+    return idx === -1 ? 100 : idx;
+  }
+
+  function effortLabel(e) {
+    return String(e.label || e.id || e.value || "").replace(/\s*Effort$/i, "");
+  }
+
+  function getEffortValue() {
+    const i = Number(els.effortSlider.value) || 0;
+    const e = state.efforts[i];
+    return e ? e.value || e.id : "high";
+  }
+
+  function setEffortValue(value) {
+    if (!state.efforts.length) return;
+    const idx = state.efforts.findIndex(
+      (e) => (e.value || e.id) === value
+    );
+    const i = idx >= 0 ? idx : state.efforts.length - 1;
+    els.effortSlider.value = String(i);
+    updateEffortUI();
+  }
+
+  function updateEffortUI() {
+    const i = Number(els.effortSlider.value) || 0;
+    const e = state.efforts[i];
+    const max = Math.max(1, state.efforts.length - 1);
+    const pct = (i / max) * 100;
+    els.effortSlider.style.setProperty("--effort-pct", `${pct}%`);
+    els.effortValue.textContent = e ? effortLabel(e) : "—";
+    els.effortSlider.setAttribute(
+      "aria-valuetext",
+      e ? effortLabel(e) : ""
+    );
+    els.effortSlider.title = e
+      ? `Effort: ${effortLabel(e)}`
+      : "Reasoning effort";
+  }
+
+  function populateEfforts(model) {
+    const raw = model?.efforts?.length
+      ? model.efforts
+      : [
+          { id: "high", value: "high", label: "High", default: true },
+          { id: "medium", value: "medium", label: "Medium" },
+          { id: "low", value: "low", label: "Low" },
+        ];
+
+    // Slider reads left → right as increasing effort
+    const efforts = [...raw].sort((a, b) => effortRank(a) - effortRank(b));
+    state.efforts = efforts;
+
+    const max = Math.max(0, efforts.length - 1);
+    els.effortSlider.min = "0";
+    els.effortSlider.max = String(max);
+    els.effortSlider.step = "1";
+    els.effortSlider.disabled = efforts.length < 2;
+
+    let defaultVal = model?.defaultEffort || "high";
+    for (const e of efforts) {
+      if (e.default) defaultVal = e.value || e.id;
+    }
+    setEffortValue(defaultVal);
+  }
+
+  els.effortSlider.addEventListener("input", updateEffortUI);
+
+  els.modelSelect.addEventListener("change", () => {
+    const m = state.models.find((x) => x.id === els.modelSelect.value);
+    populateEfforts(m);
+  });
+
+  // ---------- Sessions ----------
+  function relativeTime(iso) {
+    if (!iso) return "";
+    const t = Date.parse(iso);
+    if (!t) return "";
+    const diff = Date.now() - t;
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 48) return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    return `${d}d ago`;
+  }
+
+  function groupSessions(sessions) {
+    const map = new Map();
+    for (const s of sessions) {
+      const key = s.project || "Other";
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(s);
+    }
+    return map;
+  }
+
+  function flatSessionIds() {
+    return state.sessions.map((s) => s.id);
+  }
+
+  function isProjectExpanded(project) {
+    return state.expandedProjects.has(project);
+  }
+
+  function toggleProjectExpanded(project) {
+    if (state.expandedProjects.has(project)) {
+      state.expandedProjects.delete(project);
+    } else {
+      state.expandedProjects.add(project);
+    }
+    renderSessionList();
+  }
+
+  function expandProjectForSession(sessionId) {
+    const s = state.sessions.find((x) => x.id === sessionId);
+    if (s?.project) state.expandedProjects.add(s.project);
+  }
+
+  function updateSelectModeUI() {
+    document.body.classList.toggle("select-mode", state.selectMode);
+    if (els.btnSelectMode) {
+      els.btnSelectMode.textContent = state.selectMode ? "Done" : "Select";
+      els.btnSelectMode.classList.toggle("active", state.selectMode);
+    }
+    const n = state.selectedIds.size;
+    if (els.bulkBar) {
+      els.bulkBar.classList.toggle("hidden", !state.selectMode && n === 0);
+    }
+    if (els.bulkCount) {
+      els.bulkCount.textContent =
+        n === 0 ? "Select sessions" : n === 1 ? "1 selected" : `${n} selected`;
+    }
+    const has = n > 0;
+    if (els.btnBulkArchive) els.btnBulkArchive.disabled = !has;
+    if (els.btnBulkDelete) els.btnBulkDelete.disabled = !has;
+  }
+
+  function setSelectMode(on) {
+    state.selectMode = !!on;
+    if (!state.selectMode) {
+      state.selectedIds.clear();
+      state.lastClickedSessionId = null;
+    }
+    updateSelectModeUI();
+    renderSessionList();
+  }
+
+  function toggleSessionSelected(id, { range = false } = {}) {
+    if (!id) return;
+    if (range && state.lastClickedSessionId) {
+      const ids = flatSessionIds();
+      const a = ids.indexOf(state.lastClickedSessionId);
+      const b = ids.indexOf(id);
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        for (let i = lo; i <= hi; i++) state.selectedIds.add(ids[i]);
+      } else if (state.selectedIds.has(id)) {
+        state.selectedIds.delete(id);
+      } else {
+        state.selectedIds.add(id);
+      }
+    } else if (state.selectedIds.has(id)) {
+      state.selectedIds.delete(id);
+    } else {
+      state.selectedIds.add(id);
+    }
+    state.lastClickedSessionId = id;
+    if (state.selectedIds.size > 0) state.selectMode = true;
+    updateSelectModeUI();
+    renderSessionList();
+  }
+
+  function hideContextMenu() {
+    if (!els.contextMenu) return;
+    els.contextMenu.classList.add("hidden");
+    els.contextMenu.setAttribute("aria-hidden", "true");
+    state.contextSessionId = null;
+  }
+
+  function showContextMenu(x, y, sessionId) {
+    if (!els.contextMenu) return;
+    state.contextSessionId = sessionId;
+    els.contextMenu.classList.remove("hidden");
+    els.contextMenu.setAttribute("aria-hidden", "false");
+
+    // Position then clamp to viewport
+    const pad = 8;
+    els.contextMenu.style.left = "0px";
+    els.contextMenu.style.top = "0px";
+    const rect = els.contextMenu.getBoundingClientRect();
+    let left = x;
+    let top = y;
+    if (left + rect.width > window.innerWidth - pad) {
+      left = window.innerWidth - rect.width - pad;
+    }
+    if (top + rect.height > window.innerHeight - pad) {
+      top = window.innerHeight - rect.height - pad;
+    }
+    els.contextMenu.style.left = `${Math.max(pad, left)}px`;
+    els.contextMenu.style.top = `${Math.max(pad, top)}px`;
+  }
+
+  async function runBulkAction(action, ids) {
+    const list = [...new Set((ids || []).filter(Boolean))];
+    if (!list.length) return;
+
+    if (action === "delete") {
+      const label =
+        list.length === 1
+          ? "Delete this session permanently?"
+          : `Delete ${list.length} sessions permanently?`;
+      if (!window.confirm(label + "\n\nThis cannot be undone.")) return;
+    }
+
+    try {
+      const result = await api("/api/sessions/bulk", {
+        method: "POST",
+        body: JSON.stringify({ action, ids: list }),
+      });
+      const removed = new Set(
+        (result.results || []).filter((r) => r.ok).map((r) => r.id)
+      );
+      for (const id of removed) {
+        state.selectedIds.delete(id);
+        if (state.activeSessionId === id) {
+          state.activeSessionId = null;
+          state.draftMode = true;
+          setActiveMeta(null);
+          showEmptyState();
+        }
+      }
+      if (state.selectedIds.size === 0) state.selectMode = false;
+      await refreshSessions();
+      updateSelectModeUI();
+
+      if (result.failed > 0) {
+        const first = (result.results || []).find((r) => !r.ok);
+        setStatus(
+          false,
+          first?.error ||
+            `${result.failed} of ${list.length} ${action} operation(s) failed`
+        );
+      } else {
+        setStatus(
+          true,
+          action === "archive"
+            ? list.length === 1
+              ? "Session archived"
+              : `${list.length} sessions archived`
+            : list.length === 1
+              ? "Session deleted"
+              : `${list.length} sessions deleted`
+        );
+      }
+    } catch (err) {
+      setStatus(false, err.message || `${action} failed`);
+    }
+  }
+
+  function renderSessionList() {
+    const groups = groupSessions(state.sessions);
+    els.sessionList.innerHTML = "";
+    updateSelectModeUI();
+
+    if (state.sessions.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.style.margin = "24px 8px";
+      empty.style.fontSize = "13px";
+      empty.textContent = "No sessions yet. Hit + New to start.";
+      els.sessionList.appendChild(empty);
+      return;
+    }
+
+    for (const [project, list] of groups) {
+      const expanded = isProjectExpanded(project);
+      const group = document.createElement("div");
+      group.className = "project-group" + (expanded ? "" : " collapsed");
+      group.dataset.project = project;
+
+      const header = document.createElement("button");
+      header.type = "button";
+      header.className = "project-group-header";
+      header.setAttribute("aria-expanded", expanded ? "true" : "false");
+      header.title = expanded ? "Collapse project" : "Expand project";
+      header.innerHTML = `
+        <span class="chevron" aria-hidden="true">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </span>
+        <span class="pg-name"></span>
+        <span class="pg-count"></span>`;
+      header.querySelector(".pg-name").textContent = project;
+      header.querySelector(".pg-count").textContent = String(list.length);
+      header.addEventListener("click", (e) => {
+        e.preventDefault();
+        toggleProjectExpanded(project);
+      });
+      group.appendChild(header);
+
+      const sessionsEl = document.createElement("div");
+      sessionsEl.className = "project-group-sessions";
+      sessionsEl.setAttribute("role", "group");
+      sessionsEl.setAttribute("aria-label", `${project} sessions`);
+
+      for (const s of list) {
+        const selected = state.selectedIds.has(s.id);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className =
+          "session-item" +
+          (s.id === state.activeSessionId ? " active" : "") +
+          (selected ? " selected" : "");
+        btn.dataset.id = s.id;
+        btn.dataset.project = project;
+        btn.setAttribute("role", "listitem");
+        btn.innerHTML = `
+          <span class="radio" aria-hidden="true"></span>
+          <span class="check" aria-hidden="true"></span>
+          <span class="meta">
+            <span class="title"></span>
+            <span class="sub"></span>
+          </span>`;
+        btn.querySelector(".title").textContent = s.title || "Untitled";
+        btn.querySelector(".sub").textContent = relativeTime(s.updatedAt);
+
+        let suppressClick = false;
+
+        btn.addEventListener("click", (e) => {
+          if (suppressClick) {
+            suppressClick = false;
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+          // Multi-select: modifier keys or select mode
+          if (state.selectMode || e.ctrlKey || e.metaKey || e.shiftKey) {
+            e.preventDefault();
+            toggleSessionSelected(s.id, { range: e.shiftKey });
+            return;
+          }
+          openSession(s.id);
+        });
+
+        btn.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          suppressClick = true;
+          showContextMenu(e.clientX, e.clientY, s.id);
+        });
+
+        // Touch long-press for context menu (mobile)
+        let pressTimer = null;
+        btn.addEventListener(
+          "touchstart",
+          (e) => {
+            if (e.touches.length !== 1) return;
+            const t = e.touches[0];
+            pressTimer = setTimeout(() => {
+              pressTimer = null;
+              suppressClick = true;
+              showContextMenu(t.clientX, t.clientY, s.id);
+            }, 520);
+          },
+          { passive: true }
+        );
+        const clearPress = () => {
+          if (pressTimer) {
+            clearTimeout(pressTimer);
+            pressTimer = null;
+          }
+        };
+        btn.addEventListener("touchend", clearPress);
+        btn.addEventListener("touchmove", clearPress);
+        btn.addEventListener("touchcancel", clearPress);
+
+        sessionsEl.appendChild(btn);
+      }
+
+      group.appendChild(sessionsEl);
+      els.sessionList.appendChild(group);
+    }
+  }
+
+  async function refreshSessions() {
+    try {
+      const data = await api("/api/sessions?limit=100");
+      state.sessions = data.sessions || [];
+      // Drop selections for sessions that no longer exist
+      for (const id of [...state.selectedIds]) {
+        if (!state.sessions.some((s) => s.id === id)) state.selectedIds.delete(id);
+      }
+      renderSessionList();
+      setStatus(true, "Connected");
+    } catch (err) {
+      setStatus(false, err.message || "Offline");
+    }
+  }
+
+  // ---------- Messages UI ----------
+  function clearMessages() {
+    els.messages.innerHTML = "";
+  }
+
+  function showEmptyState() {
+    clearMessages();
+    const div = document.createElement("div");
+    div.className = "empty-state";
+    div.innerHTML = `
+      <h1>What should we build?</h1>
+      <p>Start a new chat or pick a session on the left. Grok runs on this machine with full tool access — same power as the CLI, without living in a terminal.</p>`;
+    els.messages.appendChild(div);
+  }
+
+  /** Minimal markdown → HTML (bold, code, fences, lists, headers). */
+  function renderMarkdown(text) {
+    if (!text) return "";
+    const escaped = text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+    // fenced code
+    let html = escaped.replace(/```([\w-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
+      return `<pre><code class="lang-${lang || "text"}">${code.replace(/\n$/, "")}</code></pre>`;
+    });
+
+    // inline code
+    html = html.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+
+    // bold / italic
+    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
+
+    // headers
+    html = html.replace(/^### (.+)$/gm, '<div class="md-h">$1</div>');
+    html = html.replace(/^## (.+)$/gm, '<div class="md-h">$1</div>');
+    html = html.replace(/^# (.+)$/gm, '<div class="md-h">$1</div>');
+
+    // unordered list lines
+    html = html.replace(/^[-*] (.+)$/gm, '<div class="md-li">$1</div>');
+
+    // paragraphs: double newlines
+    html = html
+      .split(/\n{2,}/)
+      .map((block) => {
+        if (
+          block.startsWith("<pre") ||
+          block.startsWith('<div class="md-')
+        ) {
+          return block;
+        }
+        return `<p>${block.replace(/\n/g, "<br>")}</p>`;
+      })
+      .join("");
+
+    return html;
+  }
+
+  function appendUserMessage(text, imageDataUrls = []) {
+    const empty = els.messages.querySelector(".empty-state");
+    if (empty) empty.remove();
+
+    const wrap = document.createElement("div");
+    wrap.className = "msg user";
+    wrap.innerHTML = `<div class="bubble"></div>`;
+    const bubble = wrap.querySelector(".bubble");
+    if (imageDataUrls.length) {
+      const imgs = document.createElement("div");
+      imgs.className = "msg-images";
+      for (const src of imageDataUrls) {
+        const img = document.createElement("img");
+        img.src = src;
+        img.alt = "Attached image";
+        imgs.appendChild(img);
+      }
+      bubble.appendChild(imgs);
+    }
+    if (text) {
+      const p = document.createElement("div");
+      p.textContent = text;
+      bubble.appendChild(p);
+    }
+    els.messages.appendChild(wrap);
+    scrollToBottom();
+    return wrap;
+  }
+
+  // ---------- Image attachments ----------
+  function renderAttachments() {
+    if (!els.attachStrip) return;
+    els.attachStrip.innerHTML = "";
+    if (!state.attachments.length) {
+      els.attachStrip.classList.add("hidden");
+      updateSendEnabled();
+      return;
+    }
+    els.attachStrip.classList.remove("hidden");
+    for (const att of state.attachments) {
+      const chip = document.createElement("div");
+      chip.className = "attach-chip";
+      chip.innerHTML = `<img alt=""/><button type="button" class="attach-remove" title="Remove" aria-label="Remove">×</button>`;
+      chip.querySelector("img").src = att.dataUrl;
+      chip.querySelector(".attach-remove").addEventListener("click", () => {
+        state.attachments = state.attachments.filter((a) => a.id !== att.id);
+        renderAttachments();
+      });
+      els.attachStrip.appendChild(chip);
+    }
+    updateSendEnabled();
+  }
+
+  function clearAttachments() {
+    state.attachments = [];
+    renderAttachments();
+  }
+
+  function updateSendEnabled() {
+    const hasText = !!els.prompt.value.trim();
+    const hasImg = state.attachments.length > 0;
+    els.btnSend.disabled = state.running || (!hasText && !hasImg);
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error("Read failed"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  /**
+   * Downscale + re-encode as JPEG. Screenshots as PNG stay multi‑MB and make
+   * vision turns slow / flaky; JPEG keeps quality fine for chat.
+   */
+  function compressDataUrl(dataUrl) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        const maxEdge = Math.max(width, height);
+        const scale = maxEdge > MAX_IMAGE_EDGE ? MAX_IMAGE_EDGE / maxEdge : 1;
+        const w = Math.max(1, Math.round(width * scale));
+        const h = Math.max(1, Math.round(height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        // White background so transparent PNGs don't go black as JPEG
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        try {
+          // Prefer smaller files for reliable round-trips
+          let quality = 0.78;
+          let out = canvas.toDataURL("image/jpeg", quality);
+          // If still huge, step quality down
+          while (out.length > 900000 && quality > 0.45) {
+            quality -= 0.1;
+            out = canvas.toDataURL("image/jpeg", quality);
+          }
+          resolve(out);
+        } catch {
+          resolve(dataUrl);
+        }
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  }
+
+  async function addImageFiles(fileList) {
+    const files = [...(fileList || [])].filter((f) => f.type.startsWith("image/"));
+    if (!files.length) return;
+
+    for (const file of files) {
+      if (state.attachments.length >= MAX_ATTACHMENTS) {
+        alert(`You can attach up to ${MAX_ATTACHMENTS} images.`);
+        break;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        alert(`${file.name} is too large (max ~12MB).`);
+        continue;
+      }
+      try {
+        let dataUrl = await readFileAsDataUrl(file);
+        dataUrl = await compressDataUrl(dataUrl);
+        const mimeMatch = /^data:(image\/[a-zA-Z0-9.+-]+);base64,/.exec(dataUrl);
+        const baseName = (file.name || "image").replace(/\.[^.]+$/, "");
+        state.attachments.push({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          name: `${baseName}.jpg`,
+          mimeType: mimeMatch ? mimeMatch[1] : "image/jpeg",
+          dataUrl,
+        });
+      } catch (err) {
+        console.warn("Failed to attach image:", err);
+      }
+    }
+    renderAttachments();
+  }
+
+  function appendAssistantShell() {
+    const wrap = document.createElement("div");
+    wrap.className = "msg assistant";
+    wrap.innerHTML = `
+      <div class="tools"></div>
+      <div class="body"></div>`;
+    els.messages.appendChild(wrap);
+    scrollToBottom();
+    return {
+      el: wrap,
+      toolsEl: wrap.querySelector(".tools"),
+      bodyEl: wrap.querySelector(".body"),
+      text: "",
+      toolMap: new Map(),
+    };
+  }
+
+  function updateAssistantText(shell, chunk) {
+    shell.text += chunk;
+    shell.bodyEl.innerHTML = renderMarkdown(shell.text);
+    scrollToBottom();
+  }
+
+  function upsertTool(shell, { id, title, status, name }) {
+    let chip = shell.toolMap.get(id);
+    if (!chip) {
+      chip = document.createElement("div");
+      chip.className = "tool-chip";
+      chip.innerHTML = `<span class="tool-name"></span><span class="tool-status"></span>`;
+      shell.toolsEl.appendChild(chip);
+      shell.toolMap.set(id, chip);
+    }
+    chip.querySelector(".tool-name").textContent = title || name || id;
+    if (status) chip.querySelector(".tool-status").textContent = status;
+    scrollToBottom();
+  }
+
+  function scrollToBottom() {
+    requestAnimationFrame(() => {
+      els.messages.scrollTop = els.messages.scrollHeight;
+    });
+  }
+
+  function setRunning(on, text) {
+    state.running = on;
+    els.runningBar.classList.toggle("hidden", !on);
+    if (text) els.runningText.textContent = text;
+    els.prompt.disabled = on;
+    if (els.btnAttach) els.btnAttach.disabled = on;
+    updateSendEnabled();
+  }
+
+  // ---------- Open session / new ----------
+  function setActiveMeta(session) {
+    if (!session) {
+      els.chatTitle.textContent = "New session";
+      els.chatProject.textContent = "";
+      els.sessionIdHint.textContent = "";
+      return;
+    }
+    els.chatTitle.textContent = session.title || "Session";
+    els.chatProject.textContent = session.project || "";
+    els.sessionIdHint.textContent = session.id.slice(0, 8) + "…";
+    if (session.cwd) setCwd(session.cwd);
+    if (session.model) {
+      const opt = [...els.modelSelect.options].find((o) => o.value === session.model);
+      if (opt) {
+        els.modelSelect.value = session.model;
+        const m = state.models.find((x) => x.id === session.model);
+        populateEfforts(m);
+      }
+    }
+    if (session.effort) {
+      setEffortValue(session.effort);
+    }
+  }
+
+  async function openSession(id) {
+    if (state.running) return;
+    if (state.selectMode) {
+      toggleSessionSelected(id);
+      return;
+    }
+    state.activeSessionId = id;
+    state.draftMode = false;
+    expandProjectForSession(id);
+    clearAttachments();
+    document.body.classList.remove("sidebar-open");
+    renderSessionList();
+
+    try {
+      const data = await api(`/api/sessions/${encodeURIComponent(id)}`);
+      setActiveMeta(data.session);
+      clearMessages();
+      if (!data.messages?.length) {
+        showEmptyState();
+        return;
+      }
+      for (const m of data.messages) {
+        if (m.role === "user") {
+          appendUserMessage(m.text);
+        } else {
+          const shell = appendAssistantShell();
+          if (m.tools?.length) {
+            for (const t of m.tools) {
+              upsertTool(shell, t);
+            }
+          }
+          if (m.text) {
+            shell.text = m.text;
+            shell.bodyEl.innerHTML = renderMarkdown(m.text);
+          }
+        }
+      }
+      scrollToBottom();
+    } catch (err) {
+      clearMessages();
+      const div = document.createElement("div");
+      div.className = "empty-state";
+      div.innerHTML = `<h1>Couldn't load session</h1><p>${escapeHtml(err.message)}</p>`;
+      els.messages.appendChild(div);
+    }
+  }
+
+  /**
+   * Start a blank draft chat.
+   * @param {{ cwd?: string }} [opts]
+   */
+  function startNewSession(opts = {}) {
+    if (state.running) return;
+    state.activeSessionId = null;
+    state.draftMode = true;
+    setActiveMeta(null);
+    if (opts.cwd) {
+      setCwd(opts.cwd);
+    } else if (!getCwd()) {
+      setCwd(guessDefaultCwd());
+    }
+    clearAttachments();
+    showEmptyState();
+    renderSessionList();
+    els.prompt.focus();
+    document.body.classList.remove("sidebar-open");
+  }
+
+  function guessDefaultCwd() {
+    // Prefer last session cwd, else leave blank (server uses process.cwd)
+    if (state.sessions[0]?.cwd) return state.sessions[0].cwd;
+    return "";
+  }
+
+  /** New button: desktop keeps current folder; mobile must pick a known project. */
+  function onNewSessionClick() {
+    if (state.running) return;
+    if (isMobileViewport()) {
+      document.body.classList.remove("sidebar-open");
+      openMobileFolderPicker();
+      return;
+    }
+    startNewSession();
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  /** Local slash commands (TUI-style). Returns true if handled. */
+  function handleSlashCommand(text) {
+    const raw = text.trim();
+    if (!raw.startsWith("/")) return false;
+    const cmd = raw.split(/\s+/)[0].toLowerCase();
+    if (cmd === "/clear" || cmd === "/new") {
+      els.prompt.value = "";
+      autoResizePrompt();
+      clearAttachments();
+      startNewSession({ cwd: getCwd() || undefined });
+      return true;
+    }
+    return false;
+  }
+
+  // ---------- Send prompt (SSE) ----------
+  async function sendPrompt() {
+    const text = els.prompt.value.trim();
+    const pendingImages = state.attachments.slice();
+    if (state.running) return;
+    if (!state.setupReady) {
+      setStatus(false, "Sign in required");
+      showSetupGate();
+      if (state.setup) renderSetupGate(state.setup);
+      else checkSetupAndBoot({ force: true });
+      return;
+    }
+    if (!text && !pendingImages.length) return;
+
+    if (text && handleSlashCommand(text)) return;
+
+    const model = els.modelSelect.value || "grok-4.5";
+    const effort = getEffortValue();
+    const cwd = getCwd() || undefined;
+    const active = getActiveSession();
+    // Folder changed after opening a session → never resume that session
+    const cwdMismatch = !!(active && cwd && active.cwd && !cwdsEqual(cwd, active.cwd));
+    if (cwdMismatch) {
+      state.activeSessionId = null;
+      state.draftMode = true;
+    }
+    const isNew = state.draftMode || !state.activeSessionId || cwdMismatch;
+
+    appendUserMessage(
+      text,
+      pendingImages.map((a) => a.dataUrl)
+    );
+    els.prompt.value = "";
+    clearAttachments();
+    autoResizePrompt();
+    els.btnSend.disabled = true;
+
+    const shell = appendAssistantShell();
+    setRunning(true, pendingImages.length ? "Uploading image…" : "Thinking…");
+
+    const body = {
+      prompt: text,
+      model,
+      effort,
+      newSession: isNew,
+    };
+    if (!isNew) body.sessionId = state.activeSessionId;
+    if (cwd) body.cwd = cwd;
+    if (pendingImages.length) {
+      body.images = pendingImages.map((a) => ({
+        data: a.dataUrl,
+        mimeType: a.mimeType,
+        name: a.name,
+      }));
+    }
+
+    const headers = { "Content-Type": "application/json" };
+    if (state.token) headers["X-Grok-Token"] = state.token;
+
+    let gotSessionId = state.activeSessionId;
+    let gotGrokEvent = false;
+    const sendStarted = Date.now();
+    // Heartbeat so long image turns never look frozen on one status line
+    const heartbeat = setInterval(() => {
+      if (!state.running || gotGrokEvent) return;
+      const secs = Math.round((Date.now() - sendStarted) / 1000);
+      els.runningText.textContent = `Waiting for Grok… ${secs}s`;
+    }, 3000);
+
+    try {
+      const res = await fetch(apiUrl("/api/chat"), {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        let msg = res.statusText;
+        try {
+          msg = (await res.json()).error || msg;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(msg);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let sep;
+        while ((sep = buffer.indexOf("\n\n")) >= 0) {
+          const raw = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          handleSseBlock(
+            raw,
+            shell,
+            (sid) => {
+              gotSessionId = sid;
+              state.activeSessionId = sid;
+              state.draftMode = false;
+              els.sessionIdHint.textContent = sid.slice(0, 8) + "…";
+            },
+            () => {
+              gotGrokEvent = true;
+            }
+          );
+        }
+      }
+    } catch (err) {
+      if (shell.text) shell.text += "\n\n";
+      shell.text += `⚠️ ${err.message || err}`;
+      shell.bodyEl.innerHTML = renderMarkdown(shell.text);
+    } finally {
+      clearInterval(heartbeat);
+      setRunning(false);
+      state.runId = null;
+      await refreshSessions();
+      if (gotSessionId) {
+        const s = state.sessions.find((x) => x.id === gotSessionId);
+        if (s) setActiveMeta(s);
+        renderSessionList();
+      }
+      els.prompt.focus();
+    }
+  }
+
+  function handleSseBlock(raw, shell, onSession, onGrokActivity) {
+    let event = "message";
+    let dataLine = "";
+    for (const line of raw.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataLine += line.slice(5).trim();
+    }
+    if (!dataLine) return;
+
+    let data;
+    try {
+      data = JSON.parse(dataLine);
+    } catch {
+      return;
+    }
+
+    switch (event) {
+      case "start":
+        if (data.sessionId) onSession(data.sessionId);
+        break;
+      case "session":
+        if (data.sessionId) onSession(data.sessionId);
+        break;
+      case "run":
+        state.runId = data.runId;
+        break;
+      case "status":
+        if (data.message) els.runningText.textContent = data.message;
+        if (typeof onGrokActivity === "function" && data.pid) onGrokActivity();
+        break;
+      case "grok":
+        if (typeof onGrokActivity === "function") onGrokActivity();
+        handleGrokEvent(data, shell);
+        break;
+      case "error":
+        if (shell.text) shell.text += "\n\n";
+        shell.text += `⚠️ ${data.message || "Error"}`;
+        shell.bodyEl.innerHTML = renderMarkdown(shell.text);
+        break;
+      case "done":
+        if (data.sessionId) onSession(data.sessionId);
+        // Prefer the detailed error event; fall back if only done arrived
+        if (!data.ok && !shell.text) {
+          if (data.stderr) {
+            shell.text = `⚠️ Grok exited with code ${data.code}\n\n${data.stderr.slice(-1500)}`;
+          } else if (data.poisonedHint) {
+            shell.text =
+              `⚠️ Grok exited unexpectedly (code ${data.code ?? "?"}). ` +
+              `This session may be stuck after a crash — start a New chat and continue there.`;
+          } else if (data.code != null && data.code !== 0) {
+            shell.text = `⚠️ Grok exited with code ${data.code}`;
+          }
+          if (shell.text) shell.bodyEl.innerHTML = renderMarkdown(shell.text);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  function handleGrokEvent(evt, shell) {
+    const type = evt.type;
+    if (type === "text") {
+      updateAssistantText(shell, evt.data || "");
+      els.runningText.textContent = "Writing…";
+    } else if (type === "thought") {
+      // High-effort turns can think for a long time with no visible text —
+      // surface a snippet so it doesn't look frozen.
+      const snippet = String(evt.data || "").replace(/\s+/g, " ").trim();
+      if (snippet) {
+        const short = snippet.length > 48 ? snippet.slice(0, 48) + "…" : snippet;
+        els.runningText.textContent = `Thinking… ${short}`;
+      } else {
+        els.runningText.textContent = "Thinking…";
+      }
+    } else if (type === "tool_call") {
+      upsertTool(shell, {
+        id: evt.toolCallId,
+        title: evt.title || evt.toolName,
+        name: evt.toolName,
+        status: evt.status || "running",
+      });
+      els.runningText.textContent = evt.title || evt.toolName || "Tool…";
+    } else if (type === "tool_call_update") {
+      upsertTool(shell, {
+        id: evt.toolCallId,
+        title: evt.title,
+        status: evt.status || "updated",
+      });
+    } else if (type === "error") {
+      updateAssistantText(shell, `\n⚠️ ${evt.message || "error"}\n`);
+    }
+  }
+
+  async function stopRun() {
+    if (!state.runId) return;
+    try {
+      await api("/api/chat/cancel", {
+        method: "POST",
+        body: JSON.stringify({ runId: state.runId }),
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // ---------- Prompt box ----------
+  function autoResizePrompt() {
+    const el = els.prompt;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 180) + "px";
+    updateSendEnabled();
+  }
+
+  els.prompt.addEventListener("input", autoResizePrompt);
+
+  els.prompt.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendPrompt();
+    }
+  });
+
+  // Paste images from clipboard (screenshots, Copy Image)
+  els.prompt.addEventListener("paste", (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageFiles = [];
+    for (const item of items) {
+      if (item.type.startsWith("image/")) {
+        const f = item.getAsFile();
+        if (f) imageFiles.push(f);
+      }
+    }
+    if (imageFiles.length) {
+      e.preventDefault();
+      addImageFiles(imageFiles);
+    }
+  });
+
+  if (els.btnAttach && els.fileAttach) {
+    els.btnAttach.addEventListener("click", () => {
+      if (state.running) return;
+      els.fileAttach.click();
+    });
+    els.fileAttach.addEventListener("change", () => {
+      addImageFiles(els.fileAttach.files);
+      els.fileAttach.value = "";
+    });
+  }
+
+  // Drag-and-drop images onto the composer
+  const composerEl = document.querySelector(".composer");
+  if (composerEl) {
+    composerEl.addEventListener("dragover", (e) => {
+      if ([...e.dataTransfer.types].includes("Files")) {
+        e.preventDefault();
+        composerEl.classList.add("drag-over");
+      }
+    });
+    composerEl.addEventListener("dragleave", () => {
+      composerEl.classList.remove("drag-over");
+    });
+    composerEl.addEventListener("drop", (e) => {
+      composerEl.classList.remove("drag-over");
+      if (!e.dataTransfer?.files?.length) return;
+      e.preventDefault();
+      addImageFiles(e.dataTransfer.files);
+    });
+  }
+
+  els.btnSend.addEventListener("click", sendPrompt);
+  els.btnStop.addEventListener("click", stopRun);
+  els.btnNew.addEventListener("click", onNewSessionClick);
+  els.btnRefresh.addEventListener("click", refreshSessions);
+
+  // ---------- Session select / bulk / context menu ----------
+  if (els.btnSelectMode) {
+    els.btnSelectMode.addEventListener("click", () => {
+      setSelectMode(!state.selectMode);
+    });
+  }
+  if (els.btnBulkCancel) {
+    els.btnBulkCancel.addEventListener("click", () => setSelectMode(false));
+  }
+  if (els.btnBulkArchive) {
+    els.btnBulkArchive.addEventListener("click", () => {
+      runBulkAction("archive", [...state.selectedIds]);
+    });
+  }
+  if (els.btnBulkDelete) {
+    els.btnBulkDelete.addEventListener("click", () => {
+      runBulkAction("delete", [...state.selectedIds]);
+    });
+  }
+
+  if (els.contextMenu) {
+    els.contextMenu.addEventListener("click", (e) => {
+      const item = e.target.closest("[data-action]");
+      if (!item) return;
+      const action = item.getAttribute("data-action");
+      const id = state.contextSessionId;
+      hideContextMenu();
+      if (!id) return;
+      if (action === "archive") {
+        runBulkAction("archive", [id]);
+      } else if (action === "delete") {
+        runBulkAction("delete", [id]);
+      } else if (action === "select") {
+        state.selectMode = true;
+        state.selectedIds.add(id);
+        state.lastClickedSessionId = id;
+        updateSelectModeUI();
+        renderSessionList();
+      }
+    });
+  }
+
+  document.addEventListener("click", (e) => {
+    if (!els.contextMenu || els.contextMenu.classList.contains("hidden")) return;
+    if (!els.contextMenu.contains(e.target)) hideContextMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (els.contextMenu && !els.contextMenu.classList.contains("hidden")) {
+        hideContextMenu();
+        return;
+      }
+      if (state.selectMode) {
+        setSelectMode(false);
+      }
+    }
+  });
+  window.addEventListener("blur", hideContextMenu);
+  window.addEventListener("resize", hideContextMenu);
+  if (els.sessionList) {
+    els.sessionList.addEventListener("scroll", hideContextMenu, { passive: true });
+  }
+
+  // Desktop: native Windows/macOS folder dialog (Electron). Non-Electron keeps free-text.
+  if (isElectron()) {
+    els.cwdInput.readOnly = true;
+    els.cwdInput.addEventListener("click", browseFolderDesktop);
+    if (els.btnCwdBrowse) {
+      els.btnCwdBrowse.addEventListener("click", (e) => {
+        e.preventDefault();
+        browseFolderDesktop();
+      });
+    }
+  } else {
+    els.cwdInput.readOnly = false;
+    els.cwdInput.placeholder = "Working directory path";
+    if (els.btnCwdBrowse) {
+      els.btnCwdBrowse.title = "Type a path when not running in the desktop app";
+      els.btnCwdBrowse.addEventListener("click", (e) => {
+        e.preventDefault();
+        els.cwdInput.focus();
+        els.cwdInput.select();
+      });
+    }
+    // Free-text path: commit on blur/Enter so folder changes start a new chat
+    let cwdEditSnapshot = getCwd();
+    els.cwdInput.addEventListener("focus", () => {
+      cwdEditSnapshot = getCwd();
+    });
+    els.cwdInput.addEventListener("blur", () => {
+      const next = getCwd();
+      if (next && !cwdsEqual(next, cwdEditSnapshot)) {
+        changeWorkingFolder(next);
+      }
+      cwdEditSnapshot = getCwd();
+    });
+    els.cwdInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        els.cwdInput.blur();
+      }
+    });
+  }
+
+  if (els.folderPickerCancel) {
+    els.folderPickerCancel.addEventListener("click", closeMobileFolderPicker);
+  }
+  if (els.folderPickerBackdrop) {
+    els.folderPickerBackdrop.addEventListener("click", (e) => {
+      if (e.target === els.folderPickerBackdrop) closeMobileFolderPicker();
+    });
+  }
+
+  async function loadRemoteInfo() {
+    const urlEl = document.getElementById("remote-url");
+    const noteEl = document.getElementById("remote-bind-note");
+    const statusEl = document.getElementById("remote-status");
+    try {
+      const info = await api("/api/remote");
+      if (urlEl) urlEl.textContent = info.phoneUrl || "Unavailable";
+      if (noteEl) {
+        noteEl.textContent = [
+          info.bindNote,
+          info.tailscaleIp
+            ? `This PC Tailscale IP: ${info.tailscaleIp}`
+            : "Tailscale IP not detected — open Tailscale on this PC.",
+        ]
+          .filter(Boolean)
+          .join(" ");
+      }
+      if (statusEl) {
+        statusEl.textContent = info.tailscaleIp
+          ? "While this app is open, every session is reachable over Tailscale."
+          : "App is listening, but Tailscale isn’t reporting an IP yet — connect Tailscale on this PC.";
+      }
+      return info;
+    } catch (err) {
+      if (urlEl) urlEl.textContent = `Could not load remote info: ${err.message}`;
+      return null;
+    }
+  }
+
+  els.btnRemote.addEventListener("click", async () => {
+    els.modalBackdrop.classList.remove("hidden");
+    await loadRemoteInfo();
+  });
+  els.modalClose.addEventListener("click", () => {
+    els.modalBackdrop.classList.add("hidden");
+  });
+  els.modalBackdrop.addEventListener("click", (e) => {
+    if (e.target === els.modalBackdrop) els.modalBackdrop.classList.add("hidden");
+  });
+
+  const btnCopy = document.getElementById("btn-copy-url");
+  if (btnCopy) {
+    btnCopy.addEventListener("click", async () => {
+      const urlEl = document.getElementById("remote-url");
+      const text = urlEl?.textContent?.trim() || "";
+      if (!text || text.startsWith("Detecting") || text.startsWith("Could not")) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        btnCopy.textContent = "Copied!";
+        setTimeout(() => {
+          btnCopy.textContent = "Copy phone URL";
+        }, 1500);
+      } catch {
+        btnCopy.textContent = "Select the URL and copy manually";
+      }
+    });
+  }
+
+  els.sidebarToggle.addEventListener("click", () => {
+    document.body.classList.toggle("sidebar-open");
+  });
+
+  const scrim = document.getElementById("sidebar-scrim");
+  if (scrim) {
+    scrim.addEventListener("click", () => {
+      document.body.classList.remove("sidebar-open");
+    });
+  }
+
+  // ---------- Setup gate (Install CLI / Sign in) ----------
+  function stopLoginPoll() {
+    if (state.loginPollTimer) {
+      clearInterval(state.loginPollTimer);
+      state.loginPollTimer = null;
+    }
+  }
+
+  function hideSetupGate() {
+    if (!els.setupGate) return;
+    els.setupGate.classList.add("hidden");
+    els.setupGate.setAttribute("aria-busy", "false");
+    els.setupGate.setAttribute("aria-hidden", "true");
+  }
+
+  function showSetupGate() {
+    if (!els.setupGate) return;
+    els.setupGate.classList.remove("hidden");
+    els.setupGate.setAttribute("aria-busy", "true");
+    els.setupGate.setAttribute("aria-hidden", "false");
+  }
+
+  function setSetupChrome({ title, message, detailsHtml, installCmd, hint, actions }) {
+    if (els.setupTitle) els.setupTitle.textContent = title || "";
+    if (els.setupMessage) els.setupMessage.textContent = message || "";
+    if (els.setupDetails) {
+      if (detailsHtml) {
+        els.setupDetails.innerHTML = detailsHtml;
+        els.setupDetails.classList.remove("hidden");
+      } else {
+        els.setupDetails.innerHTML = "";
+        els.setupDetails.classList.add("hidden");
+      }
+    }
+    if (els.setupInstallCmd) {
+      if (installCmd) {
+        els.setupInstallCmd.textContent = installCmd;
+        els.setupInstallCmd.classList.remove("hidden");
+      } else {
+        els.setupInstallCmd.textContent = "";
+        els.setupInstallCmd.classList.add("hidden");
+      }
+    }
+    if (els.setupHint) {
+      els.setupHint.innerHTML = hint || "";
+    }
+    if (els.setupActions) {
+      els.setupActions.innerHTML = "";
+      for (const a of actions || []) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = a.primary ? "btn-primary" : "btn-secondary";
+        btn.textContent = a.label;
+        if (a.disabled) btn.disabled = true;
+        if (a.id) btn.id = a.id;
+        if (a.onClick) btn.addEventListener("click", a.onClick);
+        els.setupActions.appendChild(btn);
+      }
+    }
+  }
+
+  function authReasonLabel(reason) {
+    switch (reason) {
+      case "missing":
+        return "No auth file yet";
+      case "empty":
+        return "Auth file is empty";
+      case "invalid_json":
+      case "invalid_shape":
+        return "Auth file is unreadable";
+      case "no_credentials":
+        return "Auth file has no credentials";
+      case "expired":
+        return "Session expired — sign in again";
+      case "unreadable":
+        return "Could not read auth file";
+      case "ok":
+        return "Signed in";
+      default:
+        return reason || "Unknown";
+    }
+  }
+
+  function renderSetupGate(setup) {
+    state.setup = setup;
+    showSetupGate();
+
+    if (!setup || setup.error) {
+      setSetupChrome({
+        title: "Can’t reach Grok Desktop",
+        message:
+          (setup && setup.error) ||
+          "The app backend didn’t respond. Restart Grok Desktop and try again.",
+        hint: "",
+        actions: [
+          {
+            label: "Retry",
+            primary: true,
+            onClick: () => checkSetupAndBoot({ force: true }),
+          },
+        ],
+      });
+      setStatus(false, "Offline");
+      return;
+    }
+
+    if (setup.ready) {
+      state.setupReady = true;
+      hideSetupGate();
+      stopLoginPoll();
+      return;
+    }
+
+    state.setupReady = false;
+
+    if (!setup.installed) {
+      const isWin = (setup.platform || "").startsWith("win");
+      const cmd =
+        (isWin ? setup.install?.windows : setup.install?.unix) ||
+        setup.install?.unix ||
+        "curl -fsSL https://x.ai/cli/install.sh | bash";
+      const docs = setup.install?.docsUrl || "https://x.ai/cli";
+      setSetupChrome({
+        title: "Install Grok CLI",
+        message:
+          "Grok Desktop needs the Grok CLI on this machine. Install it, then click Recheck.",
+        detailsHtml: setup.grokHome
+          ? `Expected install location includes <code>${escapeHtml(
+              pathJoinHint(setup.grokHome, "bin")
+            )}</code> or <code>grok</code> on your PATH.`
+          : "",
+        installCmd: cmd,
+        hint: `Docs: <a href="${escapeHtml(docs)}" target="_blank" rel="noopener">${escapeHtml(
+          docs
+        )}</a>`,
+        actions: [
+          {
+            label: "Copy install command",
+            primary: false,
+            onClick: async () => {
+              try {
+                await navigator.clipboard.writeText(cmd);
+                if (els.setupHint) {
+                  els.setupHint.textContent = "Install command copied — paste it in a terminal.";
+                }
+              } catch {
+                if (els.setupHint) {
+                  els.setupHint.textContent = "Select the command above and copy it manually.";
+                }
+              }
+            },
+          },
+          {
+            label: "Open install docs",
+            primary: false,
+            onClick: () => {
+              window.open(docs, "_blank", "noopener");
+            },
+          },
+          {
+            label: "Recheck",
+            primary: true,
+            onClick: () => checkSetupAndBoot({ force: true }),
+          },
+        ],
+      });
+      setStatus(false, "Install Grok CLI");
+      return;
+    }
+
+    // Installed but not signed in
+    const login = setup.login || {};
+    const emailHint = setup.auth?.email
+      ? `Last account: ${setup.auth.email}`
+      : authReasonLabel(setup.auth?.reason);
+
+    if (login.running) {
+      setSetupChrome({
+        title: "Sign in with Grok",
+        message:
+          "Complete sign-in in the browser window that opened on this computer. This screen will unlock automatically when auth is ready.",
+        detailsHtml: `<div>${escapeHtml(emailHint)}</div>`,
+        hint: isMobileViewport()
+          ? "You’re on a phone — finish OAuth on the PC running Grok Desktop."
+          : "If no browser opened, run <code>grok login</code> in a terminal.",
+        actions: [
+          {
+            label: "Signing in…",
+            primary: true,
+            disabled: true,
+          },
+          {
+            label: "I’ve signed in — Recheck",
+            primary: false,
+            onClick: () => checkSetupAndBoot({ force: true }),
+          },
+          {
+            label: "Cancel",
+            primary: false,
+            onClick: async () => {
+              try {
+                await api("/api/auth/login/cancel", { method: "POST", body: "{}" });
+              } catch {
+                /* ignore */
+              }
+              stopLoginPoll();
+              await checkSetupAndBoot({ force: true });
+            },
+          },
+        ],
+      });
+      setStatus(null, "Signing in…");
+      if (!state.loginPollTimer) startLoginPoll();
+      return;
+    }
+
+    const failed =
+      login.finishedAt &&
+      login.exitCode !== 0 &&
+      login.exitCode !== null &&
+      !setup.auth?.valid;
+
+    setSetupChrome({
+      title: "Sign in with Grok",
+      message: failed
+        ? "Sign-in didn’t finish. Try again — this opens the same OAuth browser flow as the CLI."
+        : "You’re not signed in yet. Use your Grok account (same as the CLI).",
+      detailsHtml: `<div>${escapeHtml(emailHint)}</div>${
+        failed && login.error
+          ? `<div style="margin-top:6px;color:var(--danger)">${escapeHtml(login.error)}</div>`
+          : ""
+      }`,
+      hint: isMobileViewport()
+        ? "Sign-in runs on the PC hosting this app; your phone only triggers it."
+        : "Uses <code>grok login --oauth</code> under the hood.",
+      actions: [
+        {
+          label: "Sign in with Grok",
+          primary: true,
+          id: "btn-setup-login",
+          onClick: () => startSignIn(),
+        },
+        {
+          label: "Recheck",
+          primary: false,
+          onClick: () => checkSetupAndBoot({ force: true }),
+        },
+      ],
+    });
+    setStatus(false, "Sign in required");
+  }
+
+  /** Lightweight path join for display only (avoid Node path in renderer). */
+  function pathJoinHint(home, ...parts) {
+    const sep = (home || "").includes("\\") ? "\\" : "/";
+    return [home, ...parts].filter(Boolean).join(sep);
+  }
+
+  function startLoginPoll() {
+    stopLoginPoll();
+    state.loginPollTimer = setInterval(async () => {
+      try {
+        const setup = await api("/api/setup");
+        if (setup.ready) {
+          stopLoginPoll();
+          state.setupReady = true;
+          hideSetupGate();
+          setStatus(true, setup.auth?.email ? `Signed in as ${setup.auth.email}` : "Connected");
+          await continueBootAfterSetup(setup);
+          return;
+        }
+        // Re-render so UI reflects login exit / still running
+        renderSetupGate(setup);
+        if (!setup.login?.running && !setup.ready) {
+          // Login process ended without valid auth — stop hammering; user can retry
+          stopLoginPoll();
+        }
+      } catch {
+        /* keep polling briefly during transient errors */
+      }
+    }, 1500);
+  }
+
+  async function startSignIn() {
+    try {
+      setSetupChrome({
+        title: "Sign in with Grok",
+        message: "Starting OAuth… a browser window should open on this computer.",
+        actions: [{ label: "Starting…", primary: true, disabled: true }],
+        hint: "",
+      });
+      await api("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ oauth: true }),
+      });
+      const setup = await api("/api/setup");
+      renderSetupGate(setup);
+      if (!setup.ready) startLoginPoll();
+      else {
+        state.setupReady = true;
+        hideSetupGate();
+        await continueBootAfterSetup(setup);
+      }
+    } catch (err) {
+      setSetupChrome({
+        title: "Sign in with Grok",
+        message: err.message || "Could not start login.",
+        hint: "You can also run <code>grok login</code> in a terminal, then Recheck.",
+        actions: [
+          {
+            label: "Try again",
+            primary: true,
+            onClick: () => startSignIn(),
+          },
+          {
+            label: "Recheck",
+            primary: false,
+            onClick: () => checkSetupAndBoot({ force: true }),
+          },
+        ],
+      });
+      setStatus(false, "Sign-in failed");
+    }
+  }
+
+  let bootContinued = false;
+
+  async function continueBootAfterSetup(setup) {
+    if (bootContinued) {
+      // Already booted once — just refresh after late login
+      try {
+        const { models } = await api("/api/models");
+        populateModels(models || []);
+      } catch {
+        /* ignore */
+      }
+      await refreshSessions();
+      if (setup?.auth?.email) {
+        setStatus(true, `Signed in as ${setup.auth.email}`);
+      } else {
+        setStatus(true, "Connected");
+      }
+      return;
+    }
+    bootContinued = true;
+
+    try {
+      const health = await api("/api/health");
+      if (!getCwd() && health.cwd) setCwd(health.cwd);
+      if (health.authEmail) {
+        setStatus(true, `Signed in as ${health.authEmail}`);
+      } else {
+        setStatus(true, "Connected");
+      }
+    } catch (err) {
+      setStatus(false, err.message || "Offline");
+    }
+
+    try {
+      const { models } = await api("/api/models");
+      populateModels(models || []);
+    } catch {
+      populateModels([]);
+    }
+
+    await refreshSessions();
+    startNewSession();
+
+    setInterval(() => {
+      if (!state.running && state.setupReady) refreshSessions();
+    }, 30000);
+  }
+
+  async function checkSetupAndBoot({ force = false } = {}) {
+    showSetupGate();
+    setSetupChrome({
+      title: "Checking Grok…",
+      message: "Looking for the Grok CLI and your sign-in…",
+      actions: [],
+      hint: "",
+    });
+    setStatus(null, "Checking…");
+
+    try {
+      const setup = await api("/api/setup");
+      state.setup = setup;
+      if (setup.ready) {
+        state.setupReady = true;
+        hideSetupGate();
+        stopLoginPoll();
+        await continueBootAfterSetup(setup);
+        return setup;
+      }
+      renderSetupGate(setup);
+      return setup;
+    } catch (err) {
+      renderSetupGate({ error: err.message || "Offline", ready: false });
+      return null;
+    }
+  }
+
+  // ---------- Boot ----------
+  async function boot() {
+    readTokenFromUrl();
+    if (isMobileViewport()) {
+      document.body.classList.add("is-mobile");
+      // Ensure help modal never blocks the chat on first paint
+      els.modalBackdrop.classList.add("hidden");
+    }
+    await checkSetupAndBoot();
+  }
+
+  boot();
+})();

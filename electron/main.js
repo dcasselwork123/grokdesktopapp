@@ -1,0 +1,146 @@
+"use strict";
+
+const { app, BrowserWindow, shell, ipcMain, dialog } = require("electron");
+const path = require("path");
+const { createServer } = require("../server/httpApi");
+const { resolveAccessSettings } = require("../server/remoteAccess");
+
+let mainWindow = null;
+let api = null;
+let access = null;
+
+async function startApi() {
+  if (api) return api;
+  access = resolveAccessSettings();
+  const staticDir = path.join(__dirname, "..", "renderer");
+
+  // Prefer configured port; if busy, try the next few so launch still works.
+  const portsToTry = [access.port, access.port + 1, access.port + 2, 0];
+  let lastErr = null;
+
+  for (const port of portsToTry) {
+    try {
+      api = await createServer({
+        port,
+        host: access.host, // default 0.0.0.0 → Tailscale-reachable
+        staticDir,
+        token: access.token,
+      });
+      console.log(`[Grok Desktop] Local UI:  ${api.url}`);
+      if (api.remote?.phoneUrl) {
+        console.log(`[Grok Desktop] Phone URL: ${api.remote.phoneUrl}`);
+      }
+      if (api.remote?.tailscaleIp) {
+        console.log(`[Grok Desktop] Tailscale: ${api.remote.tailscaleIp}`);
+      } else {
+        console.log(
+          "[Grok Desktop] Tailscale IP not detected — open Tailscale on this PC, then tap 📱 in the app."
+        );
+      }
+      return api;
+    } catch (err) {
+      lastErr = err;
+      if (err && err.code === "EADDRINUSE") {
+        console.warn(`[Grok Desktop] port ${port} in use, trying next…`);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastErr || new Error("Could not bind HTTP server");
+}
+
+function createWindow(baseUrl) {
+  mainWindow = new BrowserWindow({
+    width: 1280,
+    height: 840,
+    minWidth: 900,
+    minHeight: 600,
+    backgroundColor: "#1a1a1a",
+    title: "Grok Desktop",
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  // Loopback does not need the token, but include it so copy/paste of the address bar works.
+  const token = api?.token || access?.token;
+  const url = token ? `${baseUrl}/?token=${encodeURIComponent(token)}` : baseUrl;
+  mainWindow.loadURL(url);
+
+  mainWindow.webContents.setWindowOpenHandler(({ url: target }) => {
+    shell.openExternal(target);
+    return { action: "deny" };
+  });
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
+}
+
+function showFatal(err) {
+  const message = err && err.stack ? err.stack : String(err);
+  console.error("Failed to start:", message);
+  try {
+    dialog.showErrorBox(
+      "Grok Desktop failed to start",
+      message +
+        "\n\nTip: close other Grok Desktop windows, or free port 3847, then try again.\n" +
+        "If Windows Firewall prompts, allow access on private/Tailscale networks."
+    );
+  } catch {
+    /* dialog may fail if app not ready */
+  }
+}
+
+app.whenReady().then(async () => {
+  try {
+    const { url } = await startApi();
+    createWindow(url);
+  } catch (err) {
+    showFatal(err);
+    app.quit();
+  }
+
+  app.on("activate", async () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      try {
+        const { url } = await startApi();
+        createWindow(url);
+      } catch (err) {
+        showFatal(err);
+      }
+    }
+  });
+});
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
+});
+
+ipcMain.handle("get-api-info", () => ({
+  url: api?.url || null,
+  port: api?.port || access?.port,
+  host: api?.host || access?.host,
+  token: api?.token || access?.token,
+  remote: api?.remote || null,
+}));
+
+ipcMain.handle("pick-folder", async (event, defaultPath) => {
+  const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+  const opts = {
+    title: "Select working folder",
+    properties: ["openDirectory", "createDirectory"],
+  };
+  if (defaultPath && typeof defaultPath === "string") {
+    opts.defaultPath = defaultPath;
+  }
+  const result = await dialog.showOpenDialog(win || undefined, opts);
+  if (result.canceled || !result.filePaths?.length) return null;
+  return result.filePaths[0];
+});

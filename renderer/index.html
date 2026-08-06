@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#1a1a1a" />
+  <title>Grok Desktop</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    /* Critical mobile fallback if stylesheet is delayed */
+    @media (max-width: 800px) {
+      #modal-backdrop.hidden { display: none !important; }
+      body { margin: 0; background: #1a1a1a; color: #e8e8e8; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Startup gate: Install Grok CLI / Sign in (instead of silent fail) -->
+  <div id="setup-gate" class="setup-gate" aria-live="polite" aria-busy="true">
+    <div class="setup-card" role="dialog" aria-labelledby="setup-title" aria-describedby="setup-message">
+      <div class="setup-icon" aria-hidden="true">✦</div>
+      <h1 id="setup-title">Checking Grok…</h1>
+      <p id="setup-message" class="setup-message">Looking for the Grok CLI and your sign-in…</p>
+      <div id="setup-details" class="setup-details hidden"></div>
+      <pre id="setup-install-cmd" class="setup-cmd hidden" tabindex="0"></pre>
+      <div id="setup-actions" class="setup-actions"></div>
+      <p id="setup-hint" class="setup-hint"></p>
+    </div>
+  </div>
+
+  <div id="app">
+    <div id="sidebar-scrim" class="sidebar-scrim" aria-hidden="true"></div>
+    <!-- Sidebar -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-top">
+        <button id="btn-new" class="btn-new" title="New session">
+          <span class="plus">+</span> New
+        </button>
+      </div>
+
+      <div class="sidebar-section-row">
+        <div class="sidebar-section-label">Sessions</div>
+        <button type="button" id="btn-select-mode" class="btn-text" title="Select multiple sessions">Select</button>
+      </div>
+      <div id="bulk-bar" class="bulk-bar hidden" aria-live="polite">
+        <span id="bulk-count" class="bulk-count">0 selected</span>
+        <div class="bulk-actions">
+          <button type="button" id="btn-bulk-archive" class="btn-text" title="Archive selected">Archive</button>
+          <button type="button" id="btn-bulk-delete" class="btn-text danger" title="Delete selected">Delete</button>
+          <button type="button" id="btn-bulk-cancel" class="btn-text" title="Cancel selection">Cancel</button>
+        </div>
+      </div>
+      <div id="session-list" class="session-list" role="list"></div>
+
+      <div class="sidebar-footer">
+        <div class="status-pill" id="status-pill" title="Backend status">
+          <span class="dot" id="status-dot"></span>
+          <span id="status-text">Connecting…</span>
+        </div>
+        <button id="btn-remote-info" class="icon-btn" title="Remote access (iPhone)">📱</button>
+      </div>
+    </aside>
+
+    <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Toggle sidebar">☰</button>
+
+    <!-- Main chat -->
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title">
+          <span class="title-icon">✦</span>
+          <span id="chat-title">New session</span>
+          <span id="chat-project" class="project-badge"></span>
+        </div>
+        <div class="topbar-actions">
+          <button id="btn-refresh" class="icon-btn" title="Refresh sessions">↻</button>
+        </div>
+      </header>
+
+      <div id="messages" class="messages" aria-live="polite"></div>
+
+      <div id="running-bar" class="running-bar hidden">
+        <span class="spinner"></span>
+        <span id="running-text">Working…</span>
+        <button id="btn-stop" class="btn-stop">Stop</button>
+      </div>
+
+      <footer class="composer">
+        <div id="attach-strip" class="attach-strip hidden" aria-label="Attached images"></div>
+        <div class="composer-box">
+          <button type="button" id="btn-attach" class="btn-attach" title="Add image" aria-label="Add image">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+          <input
+            id="file-attach"
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif,image/*"
+            multiple
+            hidden
+          />
+          <textarea
+            id="prompt"
+            rows="1"
+            placeholder="Type a message…"
+            autocomplete="off"
+            spellcheck="true"
+          ></textarea>
+          <button id="btn-send" class="btn-send" title="Send (Enter)" disabled>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M5 12h14M13 6l6 6-6 6" />
+            </svg>
+          </button>
+        </div>
+        <div class="composer-toolbar">
+          <div class="selectors">
+            <label class="selector">
+              <span class="sel-label">Model</span>
+              <select id="model-select"></select>
+            </label>
+            <label class="selector effort-selector" title="Reasoning effort">
+              <span class="sel-label">Effort</span>
+              <div class="effort-control">
+                <input
+                  type="range"
+                  id="effort-slider"
+                  min="0"
+                  max="2"
+                  step="1"
+                  value="2"
+                  aria-label="Reasoning effort"
+                />
+                <span id="effort-value" class="effort-value">High</span>
+              </div>
+            </label>
+            <label class="selector cwd-selector">
+              <span class="sel-label">Folder</span>
+              <div class="cwd-control">
+                <input
+                  id="cwd-input"
+                  type="text"
+                  spellcheck="false"
+                  readonly
+                  placeholder="Choose folder…"
+                  title="Choose working folder"
+                />
+                <button type="button" id="btn-cwd-browse" class="cwd-browse-btn" title="Browse for folder" aria-label="Browse for folder">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+                  </svg>
+                </button>
+              </div>
+            </label>
+          </div>
+          <div class="toolbar-right">
+            <span id="session-id-hint" class="session-id-hint"></span>
+          </div>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <!-- Remote access modal -->
+  <div id="modal-backdrop" class="modal-backdrop hidden">
+    <div class="modal" role="dialog" aria-labelledby="modal-title">
+      <h2 id="modal-title">Use from iPhone</h2>
+      <div class="modal-body">
+        <p><strong>Nothing extra to install on the phone</strong> — you already have Tailscale. Use <em>Safari</em> (or Chrome).</p>
+        <p class="muted" id="remote-status">While this app is open, every session is reachable over Tailscale.</p>
+        <p><strong>Open this URL on your iPhone:</strong></p>
+        <pre id="remote-url">Detecting…</pre>
+        <button type="button" id="btn-copy-url" class="btn-secondary">Copy phone URL</button>
+        <ol>
+          <li>Keep <strong>Grok Desktop running</strong> on this PC (and Tailscale connected on both devices).</li>
+          <li>On iPhone: open Safari → paste the URL above.</li>
+          <li>Optional: Share → <strong>Add to Home Screen</strong> for a one-tap icon.</li>
+        </ol>
+        <p class="muted" id="remote-bind-note"></p>
+        <hr />
+        <p class="muted">If it won’t connect: open the Tailscale app on this PC (status showed “stopped” before), allow Windows Firewall for Node/Electron on private networks, then reopen this dialog.</p>
+      </div>
+      <button id="modal-close" class="btn-primary">Got it</button>
+    </div>
+  </div>
+
+  <!-- Session context menu (right-click / long-press) -->
+  <div id="session-context-menu" class="context-menu hidden" role="menu" aria-hidden="true">
+    <button type="button" class="context-menu-item" data-action="archive" role="menuitem">Archive</button>
+    <button type="button" class="context-menu-item danger" data-action="delete" role="menuitem">Delete…</button>
+    <div class="context-menu-sep" role="separator"></div>
+    <button type="button" class="context-menu-item" data-action="select" role="menuitem">Select</button>
+  </div>
+
+  <!-- Mobile: pick existing project folder for a new session -->
+  <div id="folder-picker-backdrop" class="modal-backdrop hidden">
+    <div class="modal folder-picker-modal" role="dialog" aria-labelledby="folder-picker-title">
+      <h2 id="folder-picker-title">Choose project</h2>
+      <div class="modal-body">
+        <p class="muted">Pick a folder from projects you’ve already used on this PC. New folders can only be added from the desktop app.</p>
+        <div id="folder-picker-list" class="folder-picker-list" role="listbox" aria-label="Project folders"></div>
+        <p id="folder-picker-empty" class="folder-picker-empty hidden">No project folders yet. Start a session from the desktop app first so a folder is saved, then try again here.</p>
+      </div>
+      <button type="button" id="folder-picker-cancel" class="btn-secondary">Cancel</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

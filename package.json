@@ -1,0 +1,19 @@
+{
+  "name": "grok-desktop",
+  "version": "0.1.0",
+  "description": "Claude-Desktop-style UI for Grok Build sessions",
+  "main": "electron/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "server": "node server/index.js",
+    "dev": "electron . --dev"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^35.1.2"
+  }
+}
