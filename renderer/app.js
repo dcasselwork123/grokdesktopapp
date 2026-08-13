@@ -934,22 +934,199 @@
     renderAttachments();
   }
 
+  const TOOL_LABELS = {
+    read_file: "Read",
+    search_replace: "Edit",
+    write: "Write",
+    write_file: "Write",
+    delete_file: "Delete",
+    run_terminal_command: "Terminal",
+    run_terminal_cmd: "Terminal",
+    bash: "Terminal",
+    shell: "Terminal",
+    grep: "Search",
+    grep_search: "Search",
+    list_dir: "List",
+    glob: "Find files",
+    glob_file_search: "Find files",
+    web_search: "Web search",
+    web_fetch: "Fetch",
+    open_page: "Open page",
+    image_gen: "Image",
+    image_edit: "Image edit",
+    spawn_subagent: "Subagent",
+    todo_write: "Todos",
+  };
+
+  function looksLikeCallId(s) {
+    return /^call[-_]/i.test(String(s || "").trim());
+  }
+
+  function basenamePath(p) {
+    if (!p) return "";
+    const s = String(p).replace(/[\\/]+$/, "");
+    const parts = s.split(/[\\/]/);
+    return parts[parts.length - 1] || s;
+  }
+
+  function formatToolStatus(status) {
+    const raw = String(status || "").trim();
+    const key = raw.toLowerCase().replace(/\s+/g, "_");
+    if (!key) return "";
+    if (["in_progress", "pending", "running", "updated", "started"].includes(key)) {
+      return "running";
+    }
+    if (["completed", "complete", "success", "done", "ok"].includes(key)) {
+      return "done";
+    }
+    if (["failed", "error", "errored"].includes(key)) return "failed";
+    if (["cancelled", "canceled"].includes(key)) return "cancelled";
+    return raw.replace(/_/g, " ");
+  }
+
+  function prettyToolKind(name) {
+    const key = String(name || "").trim();
+    if (!key || looksLikeCallId(key)) return "";
+    return TOOL_LABELS[key] || TOOL_LABELS[key.toLowerCase()] || key.replace(/_/g, " ");
+  }
+
+  function toolInputOf(src) {
+    if (!src || typeof src !== "object") return {};
+    if (src.rawInput && typeof src.rawInput === "object") return src.rawInput;
+    if (src.input && typeof src.input === "object") return src.input;
+    if (src.arguments && typeof src.arguments === "object") return src.arguments;
+    return {};
+  }
+
+  /** Human label for a live grok tool event or a restored {id,title,name,status}. */
+  function describeTool(src) {
+    const id = src.toolCallId || src.id || "";
+    const rawName =
+      src.toolName ||
+      src.name ||
+      src.kind ||
+      (src._meta && src._meta["x.ai/tool"] && src._meta["x.ai/tool"].name) ||
+      "";
+    const input = toolInputOf(src);
+    let title = src.title && !looksLikeCallId(src.title) ? String(src.title) : "";
+    const kind =
+      prettyToolKind(rawName) ||
+      (title ? prettyToolKind(title.split(/\s+/)[0]) : "") ||
+      (title ? title.split(/\s+/)[0] : "") ||
+      "";
+
+    let detail = "";
+    const filePath =
+      input.path || input.file_path || input.target_file || input.filePath;
+    const cmd = input.command || input.cmd;
+    const query = input.query || input.pattern || input.grep || input.prompt;
+    if (filePath) detail = basenamePath(filePath);
+    else if (cmd) detail = String(cmd).replace(/\s+/g, " ").trim().slice(0, 88);
+    else if (query) detail = String(query).replace(/\s+/g, " ").trim().slice(0, 88);
+    else if (title) {
+      const stripped = kind
+        ? title.replace(new RegExp("^" + kind.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*", "i"), "")
+        : title;
+      const asPath = basenamePath(stripped);
+      detail = asPath && asPath !== kind ? asPath : stripped;
+      if (detail.toLowerCase() === String(kind).toLowerCase()) detail = "";
+    }
+
+    return {
+      id,
+      kind: kind || "Tool",
+      detail,
+      status: formatToolStatus(src.status),
+      rawName,
+    };
+  }
+
+  function bindThoughtToggle(shell) {
+    if (!shell.thoughtToggle || shell.thoughtToggle._bound) return;
+    shell.thoughtToggle._bound = true;
+    shell.thoughtToggle.addEventListener("click", () => {
+      const open = shell.thoughtWrap.classList.toggle("open");
+      shell.thoughtToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+
+  function ensureThoughtUi(shell) {
+    if (!shell || !shell.el) return;
+    if (shell.thoughtWrap && shell.thoughtBody) {
+      bindThoughtToggle(shell);
+      return;
+    }
+    let wrap = shell.el.querySelector(".thought-block");
+    if (!wrap) {
+      wrap = document.createElement("div");
+      wrap.className = "thought-block hidden open";
+      wrap.innerHTML = `
+        <button type="button" class="thought-toggle" aria-expanded="true">
+          <span class="thought-chevron" aria-hidden="true">▸</span>
+          <span class="thought-label">Thinking</span>
+          <span class="thought-preview"></span>
+        </button>
+        <div class="thought-body"></div>`;
+      const tools = shell.el.querySelector(".tools");
+      shell.el.insertBefore(wrap, tools || shell.el.firstChild);
+    }
+    shell.thoughtWrap = wrap;
+    shell.thoughtToggle = wrap.querySelector(".thought-toggle");
+    shell.thoughtBody = wrap.querySelector(".thought-body");
+    shell.thoughtPreview = wrap.querySelector(".thought-preview");
+    bindThoughtToggle(shell);
+  }
+
+  function appendThought(shell, chunk) {
+    if (!shell) return;
+    if (chunk) shell.thought = (shell.thought || "") + chunk;
+    if (!shell.thought) return;
+    ensureThoughtUi(shell);
+    shell.thoughtWrap.classList.remove("hidden");
+    if (!shell.thoughtWrap.classList.contains("open")) {
+      shell.thoughtWrap.classList.add("open");
+      if (shell.thoughtToggle) shell.thoughtToggle.setAttribute("aria-expanded", "true");
+    }
+    if (shell.thoughtBody) shell.thoughtBody.textContent = shell.thought;
+    if (shell.thoughtPreview) {
+      const preview = shell.thought.replace(/\s+/g, " ").trim();
+      shell.thoughtPreview.textContent =
+        preview.length > 88 ? preview.slice(0, 88) + "…" : preview;
+    }
+    scrollToBottom();
+  }
+
   function appendAssistantShell() {
     const wrap = document.createElement("div");
     wrap.className = "msg assistant";
     wrap.innerHTML = `
+      <div class="thought-block hidden open">
+        <button type="button" class="thought-toggle" aria-expanded="true">
+          <span class="thought-chevron" aria-hidden="true">▸</span>
+          <span class="thought-label">Thinking</span>
+          <span class="thought-preview"></span>
+        </button>
+        <div class="thought-body"></div>
+      </div>
       <div class="tools"></div>
       <div class="body"></div>`;
     els.messages.appendChild(wrap);
     scrollToBottom();
-    return {
+    const shell = {
       el: wrap,
       toolsEl: wrap.querySelector(".tools"),
       bodyEl: wrap.querySelector(".body"),
+      thoughtWrap: wrap.querySelector(".thought-block"),
+      thoughtToggle: wrap.querySelector(".thought-toggle"),
+      thoughtBody: wrap.querySelector(".thought-body"),
+      thoughtPreview: wrap.querySelector(".thought-preview"),
       text: "",
+      thought: "",
       toolMap: new Map(),
       sessionId: state.activeSessionId,
     };
+    bindThoughtToggle(shell);
+    return shell;
   }
 
   function shouldRenderShell(shell) {
@@ -991,18 +1168,35 @@
     scheduleAssistantMarkdown(shell);
   }
 
-  function upsertTool(shell, { id, title, status, name }) {
+  function upsertTool(shell, src) {
     if (!shell || !shouldRenderShell(shell) || !shell.toolsEl) return;
+    const info = describeTool(src || {});
+    const id = info.id || src.id || src.toolCallId;
+    if (!id) return;
     let chip = shell.toolMap.get(id);
     if (!chip) {
       chip = document.createElement("div");
       chip.className = "tool-chip";
-      chip.innerHTML = `<span class="tool-name"></span><span class="tool-status"></span>`;
+      chip.innerHTML = `<span class="tool-kind"></span><span class="tool-detail"></span><span class="tool-status"></span>`;
       shell.toolsEl.appendChild(chip);
       shell.toolMap.set(id, chip);
     }
-    chip.querySelector(".tool-name").textContent = title || name || id;
-    if (status) chip.querySelector(".tool-status").textContent = status;
+    const prevKind = chip.dataset.kind || "";
+    const prevDetail = chip.dataset.detail || "";
+    const kind =
+      info.kind && info.kind !== "Tool" ? info.kind : prevKind || info.kind || "Tool";
+    const detail = info.detail || prevDetail;
+    chip.dataset.kind = kind;
+    if (detail) chip.dataset.detail = detail;
+    chip.querySelector(".tool-kind").textContent = kind;
+    const detailEl = chip.querySelector(".tool-detail");
+    detailEl.textContent = detail;
+    detailEl.hidden = !detail;
+    if (info.status) {
+      chip.querySelector(".tool-status").textContent = info.status;
+      chip.classList.remove("running", "done", "failed", "cancelled");
+      chip.classList.add(info.status);
+    }
     scrollToBottom();
   }
 
@@ -1443,14 +1637,17 @@
       const bodyEl = last.querySelector(".body");
       const hasText = !!(bodyEl && bodyEl.textContent && bodyEl.textContent.trim());
       if (!hasText) {
-        return {
+        const shell = {
           el: last,
           toolsEl: last.querySelector(".tools"),
           bodyEl,
           text: "",
+          thought: "",
           toolMap: new Map(),
           sessionId: state.activeSessionId,
         };
+        ensureThoughtUi(shell);
+        return shell;
       }
     }
     const empty = els.messages.querySelector(".empty-state");
@@ -1463,6 +1660,11 @@
     shell.el = fresh.el;
     shell.toolsEl = fresh.toolsEl;
     shell.bodyEl = fresh.bodyEl;
+    shell.thoughtWrap = fresh.thoughtWrap;
+    shell.thoughtToggle = fresh.thoughtToggle;
+    shell.thoughtBody = fresh.thoughtBody;
+    shell.thoughtPreview = fresh.thoughtPreview;
+    if (shell.thought) appendThought(shell, "");
     if (shell.text) flushAssistantMarkdown(shell);
     if (shell.toolMap && shell.toolsEl) {
       for (const chip of shell.toolMap.values()) {
@@ -1766,29 +1968,23 @@
       updateAssistantText(shell, evt.data || "");
       els.runningText.textContent = "Writing…";
     } else if (type === "thought") {
-      // High-effort turns can think for a long time with no visible text —
-      // surface a snippet so it doesn't look frozen.
-      const snippet = String(evt.data || "").replace(/\s+/g, " ").trim();
+      const chunk = evt.data != null ? String(evt.data) : "";
+      appendThought(shell, chunk);
+      const snippet = chunk.replace(/\s+/g, " ").trim();
       if (snippet) {
         const short = snippet.length > 48 ? snippet.slice(0, 48) + "…" : snippet;
         els.runningText.textContent = `Thinking… ${short}`;
       } else {
         els.runningText.textContent = "Thinking…";
       }
-    } else if (type === "tool_call") {
-      upsertTool(shell, {
-        id: evt.toolCallId,
-        title: evt.title || evt.toolName,
-        name: evt.toolName,
-        status: evt.status || "running",
-      });
-      els.runningText.textContent = evt.title || evt.toolName || "Tool…";
-    } else if (type === "tool_call_update") {
-      upsertTool(shell, {
-        id: evt.toolCallId,
-        title: evt.title,
-        status: evt.status || "updated",
-      });
+    } else if (type === "tool_call" || type === "tool_call_update") {
+      upsertTool(shell, evt);
+      const info = describeTool(evt);
+      const label = [info.kind, info.detail].filter(Boolean).join(" · ");
+      els.runningText.textContent =
+        info.status === "done"
+          ? `${label || "Tool"} done`
+          : label || "Using tools…";
     } else if (type === "error") {
       updateAssistantText(shell, `\n⚠️ ${evt.message || "error"}\n`);
       flushAssistantMarkdown(shell);
