@@ -16,6 +16,7 @@ const {
   cancelGrokLogin,
   getLoginStatus,
   bulkSessionAction,
+  renameSession,
   getUsageSnapshot,
 } = require("./grokService");
 const { buildRemoteInfo } = require("./remoteAccess");
@@ -324,7 +325,7 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
     if (req.method === "OPTIONS") {
       res.writeHead(204, {
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
+        "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Grok-Token",
         "Access-Control-Allow-Credentials": "true",
       });
@@ -501,6 +502,36 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
           ? (({ path: _p, ...rest }) => rest)(data.session)
           : null;
         sendJson(res, 200, { session, messages: data.messages }, extraHeaders);
+        return;
+      }
+
+      if (pathname.startsWith("/api/sessions/") && req.method === "PATCH") {
+        const id = decodeURIComponent(pathname.slice("/api/sessions/".length));
+        if (!id || id.includes("/") || id === "bulk") {
+          sendJson(res, 400, { error: "Invalid session id" }, extraHeaders);
+          return;
+        }
+        let body;
+        try {
+          body = await readBody(req);
+        } catch (err) {
+          sendJson(res, 400, { error: err.message || "Invalid JSON body" }, extraHeaders);
+          return;
+        }
+        if (body.title === undefined && body.name === undefined) {
+          sendJson(res, 400, { error: "title is required" }, extraHeaders);
+          return;
+        }
+        try {
+          const result = renameSession(id, body.title ?? body.name);
+          const session = result.session
+            ? (({ path: _p, ...rest }) => rest)(result.session)
+            : null;
+          sendJson(res, 200, { id: result.id, title: result.title, session }, extraHeaders);
+        } catch (err) {
+          const status = err.code === "NOT_FOUND" ? 404 : 500;
+          sendJson(res, status, { error: err.message || String(err) }, extraHeaders);
+        }
         return;
       }
 

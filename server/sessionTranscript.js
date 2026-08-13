@@ -5,6 +5,8 @@ const path = require("path");
 
 const LARGE_FILE_BYTES = 20 * 1024 * 1024;
 const PEEK_BYTES = 64 * 1024;
+const DESKTOP_META_FILE = ".desktop.json";
+const MAX_TITLE_LEN = 120;
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -41,6 +43,49 @@ function safeReadJson(filePath) {
   } catch {
     return null;
   }
+}
+
+function desktopMetaPath(sessionPath) {
+  return path.join(sessionPath, DESKTOP_META_FILE);
+}
+
+function readDesktopMeta(sessionPath) {
+  const data = safeReadJson(desktopMetaPath(sessionPath));
+  return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+}
+
+/** Collapse whitespace and cap length. Empty string clears a custom title. */
+function sanitizeTitle(title) {
+  return String(title ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_TITLE_LEN);
+}
+
+/**
+ * Persist a user-chosen sidebar title in `.desktop.json` (owned by this app).
+ * An empty title removes the override so generated titles show again.
+ */
+function writeDesktopTitle(sessionPath, title) {
+  const file = desktopMetaPath(sessionPath);
+  const current = readDesktopMeta(sessionPath);
+  const cleaned = sanitizeTitle(title);
+  const next = { ...current };
+  if (cleaned) next.title = cleaned;
+  else delete next.title;
+
+  const keys = Object.keys(next);
+  if (keys.length === 0) {
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      /* already gone */
+    }
+    return null;
+  }
+
+  fs.writeFileSync(file, JSON.stringify(next, null, 2) + "\n", "utf8");
+  return cleaned;
 }
 
 function hasUnclosedString(text) {
@@ -559,6 +604,7 @@ function isoFromStat(st, which) {
 function synthesizeSessionMeta(sessionPath, groupCwd) {
   const idFromDir = path.basename(sessionPath);
   const summary = safeReadJson(path.join(sessionPath, "summary.json"));
+  const desktop = readDesktopMeta(sessionPath);
   let st = null;
   try {
     st = fs.statSync(sessionPath);
@@ -573,6 +619,7 @@ function synthesizeSessionMeta(sessionPath, groupCwd) {
   const updatedFromFs = st ? isoFromStat(st, "mtime") : null;
 
   let title =
+    (desktop && desktop.title) ||
     (summary &&
       (summary.manual_title ||
         summary.generated_title ||
@@ -608,5 +655,10 @@ module.exports = {
   loadTranscript,
   synthesizeSessionMeta,
   looksLikeSessionDir,
+  readDesktopMeta,
+  writeDesktopTitle,
+  sanitizeTitle,
   LARGE_FILE_BYTES,
+  MAX_TITLE_LEN,
+  DESKTOP_META_FILE,
 };

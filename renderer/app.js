@@ -86,6 +86,8 @@
     selectedIds: new Set(),
     lastClickedSessionId: null,
     contextSessionId: null,
+    renamingSessionId: null,
+    renameDraft: "",
     // Setup gate: CLI installed + signed in
     setupReady: false,
     setup: null,
@@ -573,8 +575,16 @@
     const n = multi ? state.selectedIds.size : 1;
     const del = els.contextMenu.querySelector('[data-action="delete"]');
     const arch = els.contextMenu.querySelector('[data-action="archive"]');
+    const rename = els.contextMenu.querySelector('[data-action="rename"]');
     if (del) del.textContent = n > 1 ? `Delete ${n}…` : "Delete…";
     if (arch) arch.textContent = n > 1 ? `Archive ${n}` : "Archive";
+    if (rename) {
+      rename.style.display = multi ? "none" : "";
+      const sep = rename.nextElementSibling;
+      if (sep && sep.classList.contains("context-menu-sep")) {
+        sep.style.display = multi ? "none" : "";
+      }
+    }
     els.contextMenu.classList.remove("hidden");
     els.contextMenu.setAttribute("aria-hidden", "false");
 
@@ -593,6 +603,60 @@
     }
     els.contextMenu.style.left = `${Math.max(pad, left)}px`;
     els.contextMenu.style.top = `${Math.max(pad, top)}px`;
+  }
+
+  function startRename(sessionId) {
+    if (!sessionId) return;
+    const s = state.sessions.find((x) => x.id === sessionId);
+    if (!s) return;
+    hideContextMenu();
+    state.renamingSessionId = sessionId;
+    state.renameDraft = s.title || "";
+    renderSessionList();
+  }
+
+  function cancelRename() {
+    if (!state.renamingSessionId) return;
+    state.renamingSessionId = null;
+    state.renameDraft = "";
+    renderSessionList();
+  }
+
+  async function commitRename(sessionId, rawTitle) {
+    const s = state.sessions.find((x) => x.id === sessionId);
+    const current = (s && s.title) || "";
+    const next = String(rawTitle ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+    state.renamingSessionId = null;
+    state.renameDraft = "";
+    if (!s || next === current) {
+      renderSessionList();
+      return;
+    }
+    try {
+      const result = await api(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: next }),
+      });
+      if (result && result.session) {
+        state.sessions = state.sessions.map((x) =>
+          x.id === sessionId ? { ...x, ...result.session } : x
+        );
+      } else if (result && result.title != null) {
+        state.sessions = state.sessions.map((x) =>
+          x.id === sessionId ? { ...x, title: result.title } : x
+        );
+      }
+      if (state.activeSessionId === sessionId) {
+        setActiveMeta(state.sessions.find((x) => x.id === sessionId) || result.session);
+      }
+      renderSessionList();
+      setStatus(true, "Session renamed");
+    } catch (err) {
+      setStatus(false, err.message || "Rename failed");
+      renderSessionList();
+    }
   }
 
   async function runBulkAction(action, ids) {
@@ -706,13 +770,15 @@
 
       for (const s of list) {
         const selected = state.selectedIds.has(s.id);
-        const btn = document.createElement("button");
-        btn.type = "button";
+        const renaming = s.id === state.renamingSessionId;
+        const btn = document.createElement(renaming ? "div" : "button");
+        if (!renaming) btn.type = "button";
         btn.className =
           "session-item" +
           (s.id === state.activeSessionId ? " active" : "") +
           (selected ? " selected" : "") +
-          (isSessionLive(s.id) ? " live" : "");
+          (isSessionLive(s.id) ? " live" : "") +
+          (renaming ? " renaming" : "");
         btn.dataset.id = s.id;
         btn.dataset.project = project;
         btn.setAttribute("role", "listitem");
@@ -728,7 +794,50 @@
 
         let suppressClick = false;
 
+        if (renaming) {
+          const titleEl = btn.querySelector(".title");
+          const input = document.createElement("input");
+          input.type = "text";
+          input.className = "title-input";
+          input.value =
+            state.renamingSessionId === s.id ? state.renameDraft : s.title || "";
+          input.maxLength = 120;
+          input.setAttribute("aria-label", "Session name");
+          input.addEventListener("click", (e) => e.stopPropagation());
+          input.addEventListener("mousedown", (e) => e.stopPropagation());
+          input.addEventListener("input", () => {
+            state.renameDraft = input.value;
+          });
+          input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              input.blur();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              input.dataset.cancelled = "1";
+              cancelRename();
+            }
+          });
+          input.addEventListener("blur", () => {
+            if (input.dataset.cancelled === "1") return;
+            if (state.renamingSessionId !== s.id) return;
+            void commitRename(s.id, input.value);
+          });
+          titleEl.replaceWith(input);
+          requestAnimationFrame(() => {
+            input.focus();
+            input.select();
+          });
+        }
+
         btn.addEventListener("click", (e) => {
+          if (renaming) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
           if (suppressClick) {
             suppressClick = false;
             e.preventDefault();
@@ -746,6 +855,7 @@
 
         btn.addEventListener("contextmenu", (e) => {
           e.preventDefault();
+          if (renaming) return;
           suppressClick = true;
           showContextMenu(e.clientX, e.clientY, s.id);
         });
@@ -755,7 +865,7 @@
         btn.addEventListener(
           "touchstart",
           (e) => {
-            if (e.touches.length !== 1) return;
+            if (renaming || e.touches.length !== 1) return;
             const t = e.touches[0];
             pressTimer = setTimeout(() => {
               pressTimer = null;
@@ -791,8 +901,17 @@
       for (const id of [...state.selectedIds]) {
         if (!state.sessions.some((s) => s.id === id)) state.selectedIds.delete(id);
       }
+      if (
+        state.renamingSessionId &&
+        !state.sessions.some((s) => s.id === state.renamingSessionId)
+      ) {
+        state.renamingSessionId = null;
+        state.renameDraft = "";
+      }
       await refreshLiveRuns({ render: false });
-      renderSessionList();
+      // Don't remount an in-progress rename field
+      if (!state.renamingSessionId) renderSessionList();
+      else updateSelectModeUI();
       setStatus(true, "Connected");
     } catch (err) {
       setStatus(false, err.message || "Offline");
@@ -2588,7 +2707,9 @@
       const id = state.contextSessionId;
       hideContextMenu();
       if (!id) return;
-      if (action === "archive") {
+      if (action === "rename") {
+        startRename(id);
+      } else if (action === "archive") {
         runBulkAction("archive", idsForContextAction(id));
       } else if (action === "delete") {
         runBulkAction("delete", idsForContextAction(id));
@@ -2610,6 +2731,10 @@
     if (e.key === "Escape") {
       if (els.contextMenu && !els.contextMenu.classList.contains("hidden")) {
         hideContextMenu();
+        return;
+      }
+      if (state.renamingSessionId) {
+        cancelRename();
         return;
       }
       if (state.selectMode) {

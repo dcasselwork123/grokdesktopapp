@@ -10,6 +10,7 @@ const {
   loadTranscript,
   synthesizeSessionMeta,
   looksLikeSessionDir,
+  writeDesktopTitle,
 } = require("./sessionTranscript");
 
 function getGrokHome() {
@@ -1560,6 +1561,32 @@ async function archiveSession(sessionId) {
 }
 
 /**
+ * Set or clear a user-chosen sidebar title for a session.
+ * Empty title removes the override so the generated title is used again.
+ */
+function renameSession(sessionId, title) {
+  const session = findSessionById(sessionId);
+  if (!session) {
+    const err = new Error("Session not found");
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+  if (!session.path || !fs.existsSync(session.path)) {
+    const err = new Error("Session folder missing on disk");
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+
+  writeDesktopTitle(session.path, title);
+  const updated = synthesizeSessionMeta(session.path);
+  return {
+    id: sessionId,
+    title: updated.title,
+    session: updated,
+  };
+}
+
+/**
  * Bulk delete or archive. Continues on per-id errors and reports results.
  * @param {"delete"|"archive"} action
  * @param {string[]} ids
@@ -1643,6 +1670,7 @@ module.exports = {
   buildExitErrorMessage,
   deleteSession,
   archiveSession,
+  renameSession,
   bulkSessionAction,
   loadSessionMessages,
   loadModels,

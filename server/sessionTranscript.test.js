@@ -10,6 +10,7 @@ const {
   loadTranscript,
   synthesizeSessionMeta,
   looksLikeSessionDir,
+  writeDesktopTitle,
 } = require("./sessionTranscript");
 
 let failed = 0;
@@ -247,6 +248,31 @@ test("loadTranscript streams large files line-by-line", () => {
     assert.strictEqual(loaded.source, "updates");
     assert.strictEqual(loaded.messages[0].text, "streamed");
     assert.strictEqual(loaded.messages[1].text, "yes");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("synthesizeSessionMeta prefers desktop title over generated_title", () => {
+  const dir = tmpDir();
+  const sessionPath = path.join(dir, "019fd8b3-d10d-7cf0-a682-eb84d939e480");
+  try {
+    fs.mkdirSync(sessionPath);
+    fs.writeFileSync(
+      path.join(sessionPath, "summary.json"),
+      JSON.stringify({
+        info: { id: "019fd8b3-d10d-7cf0-a682-eb84d939e480", cwd: "C:\\Dev\\GrokDesktop" },
+        generated_title: "Identify Current User",
+      }),
+      "utf8"
+    );
+    writeDesktopTitle(sessionPath, "  My custom name  ");
+    const meta = synthesizeSessionMeta(sessionPath, "C:\\Dev\\GrokDesktop");
+    assert.strictEqual(meta.title, "My custom name");
+    writeDesktopTitle(sessionPath, "   ");
+    const cleared = synthesizeSessionMeta(sessionPath, "C:\\Dev\\GrokDesktop");
+    assert.strictEqual(cleared.title, "Identify Current User");
+    assert.strictEqual(fs.existsSync(path.join(sessionPath, ".desktop.json")), false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

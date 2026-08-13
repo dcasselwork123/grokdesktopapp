@@ -502,6 +502,24 @@ body.select-mode .session-item .check {
   line-height: 1.35;
 }
 
+.session-item.renaming {
+  cursor: default;
+}
+
+.session-item .title-input {
+  display: block;
+  width: 100%;
+  margin: 0;
+  border: 1px solid var(--accent);
+  background: var(--bg-input);
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 13.5px;
+  line-height: 1.35;
+  outline: none;
+  color: var(--text);
+}
+
 .session-item.live .title,
 .session-item.running .title {
   position: relative;
