@@ -1523,6 +1523,190 @@ body.select-mode .session-item .check {
   color: var(--text-dim);
 }
 
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.usage-wrap {
+  position: relative;
+}
+
+.usage-btn {
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.usage-btn:hover {
+  background: var(--bg-hover);
+}
+
+.usage-pie {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.usage-pie-track {
+  stroke: #3a3a3a;
+}
+
+.usage-pie-fill {
+  stroke: #4ea1ff;
+  stroke-linecap: butt;
+  transition: stroke-dasharray 0.35s ease, stroke 0.2s ease;
+}
+
+.usage-btn.ok .usage-pie-fill {
+  stroke: #4ea1ff;
+}
+
+.usage-btn.warn .usage-pie-fill {
+  stroke: var(--warn, #e0b050);
+}
+
+.usage-btn.out .usage-pie-fill {
+  stroke: var(--danger, #e07070);
+}
+
+.usage-btn.unknown .usage-pie-fill {
+  stroke: #555;
+}
+
+.usage-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  width: min(320px, calc(100vw - 24px));
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  z-index: 80;
+  padding: 12px 14px 14px;
+}
+
+.usage-popover.hidden {
+  display: none;
+}
+
+.usage-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.usage-pop-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.usage-pop-close {
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.usage-pop-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.usage-section + .usage-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.usage-section-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.usage-section-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.usage-bar {
+  margin-top: 8px;
+  height: 4px;
+  border-radius: 999px;
+  background: #333;
+  overflow: hidden;
+}
+
+.usage-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: #4ea1ff;
+}
+
+.usage-bar.ok > span {
+  background: #4ea1ff;
+}
+
+.usage-bar.warn > span {
+  background: var(--warn, #e0b050);
+}
+
+.usage-bar.out > span {
+  background: var(--danger, #e07070);
+}
+
+.usage-section-meta {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.usage-products {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.usage-products li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.usage-muted {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 /* ---------- Modal ---------- */
 .modal-backdrop {
   position: fixed;
@@ -1815,9 +1999,13 @@ body.select-mode .session-item .check {
   }
 
   .cwd-selector,
-  .session-id-hint,
-  .toolbar-right {
+  .session-id-hint {
     display: none !important;
+  }
+
+  .toolbar-right {
+    display: flex !important;
+    margin-left: auto;
   }
 
   .selector {

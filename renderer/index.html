@@ -163,6 +163,41 @@
           </div>
           <div class="toolbar-right">
             <span id="session-id-hint" class="session-id-hint"></span>
+            <div class="usage-wrap">
+              <button
+                type="button"
+                id="usage-btn"
+                class="usage-btn unknown"
+                title="Usage"
+                aria-label="Weekly usage"
+                aria-haspopup="dialog"
+                aria-expanded="false"
+                aria-controls="usage-popover"
+              >
+                <svg class="usage-pie" viewBox="0 0 36 36" aria-hidden="true">
+                  <circle class="usage-pie-track" cx="18" cy="18" r="14" fill="none" stroke-width="4"></circle>
+                  <circle
+                    id="usage-pie-fill"
+                    class="usage-pie-fill"
+                    cx="18"
+                    cy="18"
+                    r="14"
+                    fill="none"
+                    stroke-width="4"
+                    pathLength="100"
+                    stroke-dasharray="0 100"
+                    transform="rotate(-90 18 18)"
+                  ></circle>
+                </svg>
+              </button>
+              <div id="usage-popover" class="usage-popover hidden" role="dialog" aria-labelledby="usage-pop-title">
+                <div class="usage-pop-head">
+                  <h3 id="usage-pop-title">Usage</h3>
+                  <button type="button" id="usage-pop-close" class="usage-pop-close" aria-label="Close">×</button>
+                </div>
+                <div id="usage-pop-body" class="usage-pop-body"></div>
+              </div>
+            </div>
           </div>
         </div>
       </footer>

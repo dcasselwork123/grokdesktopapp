@@ -54,6 +54,11 @@
     sessionBannerText: document.getElementById("session-banner-text"),
     sessionBannerAction: document.getElementById("session-banner-action"),
     sessionBannerDismiss: document.getElementById("session-banner-dismiss"),
+    usageBtn: document.getElementById("usage-btn"),
+    usagePieFill: document.getElementById("usage-pie-fill"),
+    usagePopover: document.getElementById("usage-popover"),
+    usagePopBody: document.getElementById("usage-pop-body"),
+    usagePopClose: document.getElementById("usage-pop-close"),
   };
 
   const state = {
@@ -68,6 +73,8 @@
     liveShell: null,
     streamSessionId: null,
     attachingRunId: null,
+    usage: null,
+    usageTimer: null,
     token: null,
     draftMode: true, // true until first message of a new chat
     attachments: [], // { id, name, mimeType, dataUrl }
@@ -1309,6 +1316,7 @@
       }
 
       unlockPrompt({ focus: true });
+      refreshUsage();
       if (!state.running) {
         // Don't block typing while we check for an in-flight run.
         void maybeAttachActiveRun(id);
@@ -1343,6 +1351,7 @@
     renderSessionList();
     document.body.classList.remove("sidebar-open");
     unlockPrompt({ focus: true });
+    refreshUsage();
   }
 
   function guessDefaultCwd() {
@@ -1884,6 +1893,152 @@
     if (els.sessionIdHint) els.sessionIdHint.textContent = sid.slice(0, 8) + "…";
   }
 
+  function usageTone(pct) {
+    const n = Number(pct);
+    if (!Number.isFinite(n)) return "unknown";
+    if (n >= 99.5) return "out";
+    if (n >= 80) return "warn";
+    return "ok";
+  }
+
+  function formatResetAt(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (!Number.isFinite(d.getTime())) return "";
+    return d.toLocaleString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
+  function formatTokenCount(n) {
+    const v = Number(n) || 0;
+    if (v >= 1_000_000) {
+      const m = v / 1_000_000;
+      return (m >= 10 ? Math.round(m) : m.toFixed(1).replace(/\.0$/, "")) + "M";
+    }
+    if (v >= 1000) return `${Math.round(v / 1000)}k`;
+    return String(v);
+  }
+
+  function setUsagePie(percent, tone) {
+    if (els.usagePieFill) {
+      const used = Math.max(0, Math.min(100, Number(percent) || 0));
+      els.usagePieFill.setAttribute("stroke-dasharray", `${used} ${100 - used}`);
+    }
+    if (els.usageBtn) {
+      els.usageBtn.classList.remove("ok", "warn", "out", "unknown");
+      els.usageBtn.classList.add(tone || "unknown");
+    }
+  }
+
+  function renderUsagePopover(data) {
+    if (!els.usagePopBody) return;
+    const weekly = data && data.weekly;
+    const session = data && data.session;
+    const parts = [];
+
+    if (weekly) {
+      const used = Math.round(weekly.usedPercent);
+      const left = Math.max(0, Math.round(weekly.remainingPercent));
+      const tone = usageTone(weekly.usedPercent);
+      const reset = formatResetAt(weekly.resetsAt);
+      parts.push(`
+        <section class="usage-section">
+          <div class="usage-section-title">Weekly</div>
+          <div class="usage-section-sub">${
+            tone === "out"
+              ? "You're out of weekly usage."
+              : `You've used ${used}% · ${left}% remaining`
+          }</div>
+          <div class="usage-bar ${tone}"><span style="width:${Math.max(0, Math.min(100, weekly.usedPercent))}%"></span></div>
+          <div class="usage-section-meta">${reset ? `Resets ${reset}` : "Resets weekly"}</div>
+          ${
+            weekly.products && weekly.products.length
+              ? `<ul class="usage-products">${weekly.products
+                  .map(
+                    (p) =>
+                      `<li><span>${escapeHtml(p.label)}</span><span>${Math.round(
+                        p.usedPercent
+                      )}%</span></li>`
+                  )
+                  .join("")}</ul>`
+              : ""
+          }
+        </section>`);
+    } else {
+      parts.push(`
+        <section class="usage-section">
+          <div class="usage-section-title">Weekly</div>
+          <p class="usage-muted">${
+            data && data.weeklyError
+              ? "Couldn't load weekly usage right now."
+              : "Weekly usage isn't available yet."
+          }</p>
+        </section>`);
+    }
+
+    if (session) {
+      const pct = Math.round(session.usedPercent);
+      const used = formatTokenCount(session.tokensUsed);
+      const total = formatTokenCount(session.tokensTotal);
+      parts.push(`
+        <section class="usage-section">
+          <div class="usage-section-title">This session</div>
+          <div class="usage-section-sub">${used} / ${total} tokens (${pct}%)</div>
+          <div class="usage-bar ${usageTone(session.usedPercent)}"><span style="width:${Math.max(
+            0,
+            Math.min(100, session.usedPercent)
+          )}%"></span></div>
+          <div class="usage-section-meta">Context window for this chat — Grok doesn't use 5-hour sessions.</div>
+        </section>`);
+    } else {
+      parts.push(`
+        <section class="usage-section">
+          <div class="usage-section-title">This session</div>
+          <p class="usage-muted">Open a chat to see how much of the context window is used.</p>
+        </section>`);
+    }
+
+    els.usagePopBody.innerHTML = parts.join("");
+  }
+
+  async function refreshUsage() {
+    if (!els.usageBtn) return;
+    try {
+      const q = state.activeSessionId
+        ? `?sessionId=${encodeURIComponent(state.activeSessionId)}`
+        : "";
+      const data = await api(`/api/usage${q}`);
+      state.usage = data;
+      const weekly = data && data.weekly;
+      setUsagePie(weekly ? weekly.usedPercent : 0, weekly ? usageTone(weekly.usedPercent) : "unknown");
+      if (els.usageBtn) {
+        els.usageBtn.title = weekly
+          ? `Weekly usage ${Math.round(weekly.usedPercent)}% used`
+          : "Usage";
+      }
+      if (els.usagePopover && !els.usagePopover.classList.contains("hidden")) {
+        renderUsagePopover(data);
+      }
+    } catch {
+      setUsagePie(0, "unknown");
+    }
+  }
+
+  function setUsagePopoverOpen(open) {
+    if (!els.usagePopover || !els.usageBtn) return;
+    els.usagePopover.classList.toggle("hidden", !open);
+    els.usageBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) {
+      renderUsagePopover(state.usage || {});
+      refreshUsage();
+    }
+  }
+
   async function finishTurn(sessionId) {
     hideReconnectStatus();
     setRunning(false);
@@ -1899,6 +2054,7 @@
     }
     renderSessionList();
     unlockPrompt({ focus: true });
+    refreshUsage();
   }
 
   function handleSseBlock(raw, shell, onSession, onGrokActivity) {
@@ -2112,6 +2268,25 @@
       addImageFiles(e.dataTransfer.files);
     });
   }
+
+  if (els.usageBtn) {
+    els.usageBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const open = els.usagePopover && els.usagePopover.classList.contains("hidden");
+      setUsagePopoverOpen(open);
+    });
+  }
+  if (els.usagePopClose) {
+    els.usagePopClose.addEventListener("click", () => setUsagePopoverOpen(false));
+  }
+  document.addEventListener("click", (e) => {
+    if (!els.usagePopover || els.usagePopover.classList.contains("hidden")) return;
+    const wrap = e.target.closest && e.target.closest(".usage-wrap");
+    if (!wrap) setUsagePopoverOpen(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") setUsagePopoverOpen(false);
+  });
 
   els.btnSend.addEventListener("click", sendPrompt);
   els.btnStop.addEventListener("click", stopRun);
@@ -2761,11 +2936,17 @@
       startNewSession({ preserveLast: !!(lastId && state.sessions.length === 0) });
     }
     unlockPrompt({ focus: true });
+    refreshUsage();
 
     if (!sessionRefreshTimer) {
       sessionRefreshTimer = setInterval(() => {
         if (!state.running && state.setupReady) refreshSessions();
       }, 30000);
+    }
+    if (!state.usageTimer) {
+      state.usageTimer = setInterval(() => {
+        if (state.setupReady) refreshUsage();
+      }, 90000);
     }
   }
 

@@ -16,6 +16,7 @@ const {
   cancelGrokLogin,
   getLoginStatus,
   bulkSessionAction,
+  getUsageSnapshot,
 } = require("./grokService");
 const { buildRemoteInfo } = require("./remoteAccess");
 
@@ -466,6 +467,22 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
 
       if (pathname === "/api/models" && req.method === "GET") {
         sendJson(res, 200, { models: loadModels() }, extraHeaders);
+        return;
+      }
+
+      if (pathname === "/api/usage" && req.method === "GET") {
+        const sessionId = parsed.searchParams.get("sessionId") || null;
+        try {
+          const usage = await getUsageSnapshot({ sessionId });
+          sendJson(res, 200, usage, extraHeaders);
+        } catch (err) {
+          sendJson(
+            res,
+            500,
+            { error: err.message || "Usage unavailable", weekly: null, session: null },
+            extraHeaders
+          );
+        }
         return;
       }
 

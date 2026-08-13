@@ -1271,6 +1271,118 @@ function createSessionId() {
   return randomUUID();
 }
 
+const BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
+let weeklyCreditsCache = { at: 0, data: null };
+
+function getAccountAccessKey() {
+  const authPath = getAuthJsonPath();
+  if (!fs.existsSync(authPath)) return null;
+  const data = safeReadJson(authPath);
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const entries = Object.values(data).filter((e) => e && typeof e === "object");
+  const account =
+    entries.find((e) => e.refresh_token || e.key || e.auth_mode === "oidc") ||
+    entries[0];
+  if (!account || typeof account.key !== "string" || !account.key) return null;
+  return account.key;
+}
+
+function productLabel(id) {
+  const raw = String(id || "");
+  if (raw === "GrokBuild") return "Grok Build";
+  if (raw === "GrokChat") return "Grok Chat";
+  if (raw === "GrokImagine") return "Imagine";
+  if (raw === "GrokVoice") return "Voice";
+  return raw.replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+
+async function fetchWeeklyCredits({ force = false } = {}) {
+  if (!force && weeklyCreditsCache.data && Date.now() - weeklyCreditsCache.at < 45000) {
+    return weeklyCreditsCache.data;
+  }
+  const key = getAccountAccessKey();
+  if (!key) return null;
+  const ac = typeof AbortSignal !== "undefined" && AbortSignal.timeout
+    ? AbortSignal.timeout(8000)
+    : undefined;
+  const res = await fetch(BILLING_URL, {
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "X-XAI-Token-Auth": "xai-grok-cli",
+      Accept: "application/json",
+    },
+    signal: ac,
+  });
+  if (!res.ok) {
+    const err = new Error(`billing ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  const json = await res.json();
+  weeklyCreditsCache = { at: Date.now(), data: json };
+  return json;
+}
+
+function readSessionContext(sessionId) {
+  if (!sessionId) return null;
+  const sessionPath = findSessionPath(sessionId);
+  if (!sessionPath) return null;
+  const signals = safeReadJson(path.join(sessionPath, "signals.json"));
+  if (!signals) return null;
+  const tokensUsed = Number(signals.contextTokensUsed) || 0;
+  const tokensTotal = Number(signals.contextWindowTokens) || 0;
+  let usedPercent = Number(signals.contextWindowUsage);
+  if (!Number.isFinite(usedPercent)) {
+    usedPercent = tokensTotal > 0 ? Math.round((tokensUsed / tokensTotal) * 100) : 0;
+  }
+  return {
+    tokensUsed,
+    tokensTotal,
+    usedPercent: Math.max(0, Math.min(100, usedPercent)),
+  };
+}
+
+/**
+ * Weekly credit usage + this session's context window.
+ * Never includes tokens or account secrets.
+ */
+async function getUsageSnapshot({ sessionId = null } = {}) {
+  let weekly = null;
+  let weeklyError = null;
+  try {
+    const raw = await fetchWeeklyCredits();
+    const cfg = raw && raw.config;
+    if (cfg) {
+      const used = Number(cfg.creditUsagePercent);
+      const usedPercent = Number.isFinite(used) ? used : 0;
+      weekly = {
+        usedPercent,
+        remainingPercent: Math.max(0, Math.round((100 - usedPercent) * 10) / 10),
+        resetsAt: (cfg.currentPeriod && cfg.currentPeriod.end) || cfg.billingPeriodEnd || null,
+        periodStart:
+          (cfg.currentPeriod && cfg.currentPeriod.start) || cfg.billingPeriodStart || null,
+        periodEnd: (cfg.currentPeriod && cfg.currentPeriod.end) || cfg.billingPeriodEnd || null,
+        periodType: (cfg.currentPeriod && cfg.currentPeriod.type) || "USAGE_PERIOD_TYPE_WEEKLY",
+        products: Array.isArray(cfg.productUsage)
+          ? cfg.productUsage.map((p) => ({
+              id: p.product || "unknown",
+              label: productLabel(p.product),
+              usedPercent: Number(p.usagePercent) || 0,
+            }))
+          : [],
+      };
+    }
+  } catch {
+    weeklyError = "unavailable";
+  }
+
+  return {
+    weekly,
+    weeklyError,
+    session: readSessionContext(sessionId),
+  };
+}
+
 function getStatus() {
   const setup = getSetupStatus();
   return {
@@ -1505,4 +1617,5 @@ module.exports = {
   saveImageUpload,
   createSessionId,
   getStatus,
+  getUsageSnapshot,
 };
