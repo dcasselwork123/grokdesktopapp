@@ -108,6 +108,11 @@ function focusMainWindow() {
     if (mainWindow.isMinimized()) mainWindow.restore();
     if (!mainWindow.isVisible()) mainWindow.show();
     mainWindow.focus();
+    try {
+      mainWindow.webContents.focus();
+    } catch {
+      /* contents may not be ready */
+    }
     return;
   }
   if (api?.url) createWindow(api.url);
@@ -163,6 +168,24 @@ function attachWindowGuards(win) {
 
   win.webContents.on("did-finish-load", () => {
     crashReloadPending = false;
+    // Windows often shows the window without giving the renderer keyboard focus
+    // until a native dialog (e.g. folder picker) runs. Force it after load.
+    try {
+      if (!win.isDestroyed()) {
+        win.focus();
+        win.webContents.focus();
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+
+  win.on("focus", () => {
+    try {
+      if (!win.isDestroyed()) win.webContents.focus();
+    } catch {
+      /* ignore */
+    }
   });
 }
 
@@ -181,12 +204,25 @@ function createWindow(baseUrl) {
     backgroundColor: "#1a1a1a",
     title: "Grok Desktop",
     autoHideMenuBar: true,
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+
+  mainWindow.once("ready-to-show", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+      try {
+        mainWindow.webContents.focus();
+      } catch {
+        /* ignore */
+      }
+    }
   });
 
   // Loopback does not need the token, but include it so copy/paste of the address bar works.
@@ -291,6 +327,14 @@ ipcMain.handle("pick-folder", async (event, defaultPath) => {
     opts.defaultPath = defaultPath;
   }
   const result = await dialog.showOpenDialog(win || undefined, opts);
+  if (win && !win.isDestroyed()) {
+    win.focus();
+    try {
+      win.webContents.focus();
+    } catch {
+      /* ignore */
+    }
+  }
   if (result.canceled || !result.filePaths?.length) return null;
   return result.filePaths[0];
 });

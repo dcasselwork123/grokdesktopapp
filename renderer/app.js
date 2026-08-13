@@ -164,11 +164,13 @@
     // Same folder as the open session → keep chatting there
     if (session && cwdsEqual(next, session.cwd)) {
       setCwd(next);
+      unlockPrompt({ focus: true });
       return;
     }
 
     // Already a blank draft on this folder
     if (!state.activeSessionId && state.draftMode && cwdsEqual(next, getCwd())) {
+      unlockPrompt({ focus: true });
       return;
     }
 
@@ -1021,6 +1023,21 @@
     if (was !== on) renderSessionList();
   }
 
+  /** Chat is never gated on picking a folder. Unlock + focus the composer. */
+  function unlockPrompt({ focus = true } = {}) {
+    if (!els.prompt) return;
+    if (!state.running && els.prompt.disabled) els.prompt.disabled = false;
+    if (els.btnAttach && !state.running) els.btnAttach.disabled = false;
+    updateSendEnabled();
+    if (focus && !state.running) {
+      try {
+        els.prompt.focus({ preventScroll: true });
+      } catch {
+        els.prompt.focus();
+      }
+    }
+  }
+
   // ---------- Open session / new ----------
   function setActiveMeta(session) {
     if (!session) {
@@ -1033,6 +1050,7 @@
     els.chatProject.textContent = session.project || "";
     els.sessionIdHint.textContent = session.id.slice(0, 8) + "…";
     if (session.cwd) setCwd(session.cwd);
+    else if (!getCwd()) setCwd(guessDefaultCwd());
     if (session.model) {
       const opt = [...els.modelSelect.options].find((o) => o.value === session.model);
       if (opt) {
@@ -1092,11 +1110,14 @@
         const fresh = reuseOrAppendAssistantShell();
         rebindShell(state.liveShell, fresh);
         showReconnectStatus("Live", "ok");
+        unlockPrompt({ focus: false });
         return;
       }
 
+      unlockPrompt({ focus: true });
       if (!state.running) {
-        await maybeAttachActiveRun(id);
+        // Don't block typing while we check for an in-flight run.
+        void maybeAttachActiveRun(id);
       }
     } catch (err) {
       clearMessages();
@@ -1104,6 +1125,7 @@
       div.className = "empty-state";
       div.innerHTML = `<h1>Couldn't load session</h1><p>${escapeHtml(err.message)}</p>`;
       els.messages.appendChild(div);
+      unlockPrompt({ focus: true });
     }
   }
 
@@ -1125,8 +1147,8 @@
     clearAttachments();
     showEmptyState();
     renderSessionList();
-    els.prompt.focus();
     document.body.classList.remove("sidebar-open");
+    unlockPrompt({ focus: true });
   }
 
   function guessDefaultCwd() {
@@ -1674,7 +1696,7 @@
       if (s) setActiveMeta(s);
     }
     renderSessionList();
-    els.prompt.focus();
+    unlockPrompt({ focus: true });
   }
 
   function handleSseBlock(raw, shell, onSession, onGrokActivity) {
@@ -1811,6 +1833,34 @@
   }
 
   els.prompt.addEventListener("input", autoResizePrompt);
+
+  // Clicking the transcript (or typing while it has focus) should land in the
+  // composer — same as a normal chat app. Folder is never a prerequisite.
+  if (els.messages) {
+    els.messages.addEventListener("click", (e) => {
+      if (e.target.closest("a, button, input, textarea, select")) return;
+      unlockPrompt({ focus: true });
+    });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (state.running) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === "Tab" || e.key === "Escape") return;
+    const tag = (e.target && e.target.tagName) || "";
+    if (tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT") return;
+    if (e.target && e.target.isContentEditable) return;
+    if (
+      e.target &&
+      e.target.closest &&
+      e.target.closest("#sidebar, .modal, .context-menu, #setup-gate, #folder-picker-backdrop")
+    ) {
+      return;
+    }
+    if (els.prompt.disabled) els.prompt.disabled = false;
+    if (document.activeElement !== els.prompt) {
+      unlockPrompt({ focus: true });
+    }
+  });
 
   els.prompt.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -2506,6 +2556,7 @@
     }
 
     await refreshSessions();
+    if (!getCwd()) setCwd(guessDefaultCwd());
     const lastId = readLastSessionId();
     const found = lastId && state.sessions.some((s) => s.id === lastId);
     if (found) {
@@ -2513,6 +2564,7 @@
     } else {
       startNewSession({ preserveLast: !!(lastId && state.sessions.length === 0) });
     }
+    unlockPrompt({ focus: true });
 
     if (!sessionRefreshTimer) {
       sessionRefreshTimer = setInterval(() => {
