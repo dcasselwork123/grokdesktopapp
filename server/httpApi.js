@@ -618,9 +618,22 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
 
       if (pathname === "/api/runs" && req.method === "GET") {
         const sessionId = parsed.searchParams.get("sessionId") || "";
+        if (!sessionId) {
+          const runs = [];
+          for (const record of activeRuns.values()) {
+            if (record.done) continue;
+            runs.push({
+              runId: record.runId,
+              sessionId: record.sessionId,
+              startedAt: record.startedAt,
+            });
+          }
+          sendJson(res, 200, { runs }, extraHeaders);
+          return;
+        }
         const record = findActiveRunBySessionId(activeRuns, sessionId);
         if (!record) {
-          sendJson(res, 200, { run: null }, extraHeaders);
+          sendJson(res, 200, { run: null, runs: [] }, extraHeaders);
           return;
         }
         sendJson(
@@ -635,6 +648,13 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
             runId: record.runId,
             sessionId: record.sessionId,
             startedAt: record.startedAt,
+            runs: [
+              {
+                runId: record.runId,
+                sessionId: record.sessionId,
+                startedAt: record.startedAt,
+              },
+            ],
           },
           extraHeaders
         );

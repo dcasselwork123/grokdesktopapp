@@ -73,6 +73,8 @@
     liveShell: null,
     streamSessionId: null,
     attachingRunId: null,
+    turnGen: 0,
+    liveSessionIds: new Set(),
     usage: null,
     usageTimer: null,
     token: null,
@@ -98,6 +100,7 @@
   const MAX_IMAGE_EDGE = 1280;
   const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
   const LAST_SESSION_KEY = "grok_desktop_last_session";
+  const LAST_CWD_KEY = "grok_desktop_last_cwd";
   const MD_DEBOUNCE_MS = 64;
 
   function isMobileViewport() {
@@ -131,14 +134,35 @@
   }
 
   // ---------- Working folder (cwd) ----------
+  function persistLastCwd(cwd) {
+    try {
+      if (cwd) localStorage.setItem(LAST_CWD_KEY, cwd);
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }
+
+  function readLastCwd() {
+    try {
+      return (localStorage.getItem(LAST_CWD_KEY) || "").trim();
+    } catch {
+      return "";
+    }
+  }
+
   function setCwd(cwd) {
     const value = (cwd || "").trim();
     els.cwdInput.value = value;
     els.cwdInput.title = value || "Choose working folder";
+    if (value) persistLastCwd(value);
   }
 
   function getCwd() {
     return els.cwdInput.value.trim();
+  }
+
+  function rememberedCwd() {
+    return getCwd() || readLastCwd() || "";
   }
 
   /** Normalize for path equality (Windows-friendly: slashes + case). */
@@ -164,7 +188,7 @@
    */
   function changeWorkingFolder(nextCwd) {
     const next = (nextCwd || "").trim();
-    if (!next || state.running) return;
+    if (!next) return;
 
     const session = getActiveSession();
 
@@ -474,20 +498,36 @@
     if (els.btnBulkDelete) els.btnBulkDelete.disabled = !has;
   }
 
+  function visibleSessionIds() {
+    const ids = [];
+    for (const [project, list] of groupSessions(state.sessions)) {
+      if (!isProjectExpanded(project)) continue;
+      for (const s of list) ids.push(s.id);
+    }
+    return ids.length ? ids : flatSessionIds();
+  }
+
+  function syncSessionSelectionUI() {
+    updateSelectModeUI();
+    if (!els.sessionList) return;
+    for (const btn of els.sessionList.querySelectorAll(".session-item")) {
+      btn.classList.toggle("selected", state.selectedIds.has(btn.dataset.id));
+    }
+  }
+
   function setSelectMode(on) {
     state.selectMode = !!on;
     if (!state.selectMode) {
       state.selectedIds.clear();
       state.lastClickedSessionId = null;
     }
-    updateSelectModeUI();
-    renderSessionList();
+    syncSessionSelectionUI();
   }
 
   function toggleSessionSelected(id, { range = false } = {}) {
     if (!id) return;
     if (range && state.lastClickedSessionId) {
-      const ids = flatSessionIds();
+      const ids = visibleSessionIds();
       const a = ids.indexOf(state.lastClickedSessionId);
       const b = ids.indexOf(id);
       if (a >= 0 && b >= 0) {
@@ -505,8 +545,18 @@
     }
     state.lastClickedSessionId = id;
     if (state.selectedIds.size > 0) state.selectMode = true;
-    updateSelectModeUI();
-    renderSessionList();
+    syncSessionSelectionUI();
+  }
+
+  function selectedIdsSnapshot() {
+    return [...state.selectedIds].filter(Boolean);
+  }
+
+  function idsForContextAction(sessionId) {
+    if (sessionId && state.selectedIds.size > 1 && state.selectedIds.has(sessionId)) {
+      return selectedIdsSnapshot();
+    }
+    return sessionId ? [sessionId] : [];
   }
 
   function hideContextMenu() {
@@ -519,6 +569,12 @@
   function showContextMenu(x, y, sessionId) {
     if (!els.contextMenu) return;
     state.contextSessionId = sessionId;
+    const multi = state.selectedIds.size > 1 && state.selectedIds.has(sessionId);
+    const n = multi ? state.selectedIds.size : 1;
+    const del = els.contextMenu.querySelector('[data-action="delete"]');
+    const arch = els.contextMenu.querySelector('[data-action="archive"]');
+    if (del) del.textContent = n > 1 ? `Delete ${n}…` : "Delete…";
+    if (arch) arch.textContent = n > 1 ? `Archive ${n}` : "Archive";
     els.contextMenu.classList.remove("hidden");
     els.contextMenu.setAttribute("aria-hidden", "false");
 
@@ -551,6 +607,7 @@
       if (!window.confirm(label + "\n\nThis cannot be undone.")) return;
     }
 
+    const cwdKeep = rememberedCwd();
     try {
       const result = await api("/api/sessions/bulk", {
         method: "POST",
@@ -559,17 +616,21 @@
       const removed = new Set(
         (result.results || []).filter((r) => r.ok).map((r) => r.id)
       );
+      let droppedActive = false;
       for (const id of removed) {
         state.selectedIds.delete(id);
-        if (state.activeSessionId === id) {
-          setActiveSessionId(null);
-          state.draftMode = true;
-          setActiveMeta(null);
-          showEmptyState();
-        }
+        if (state.activeSessionId === id) droppedActive = true;
+      }
+      if (droppedActive) {
+        setActiveSessionId(null);
+        state.draftMode = true;
+        setActiveMeta(null);
+        if (cwdKeep) setCwd(cwdKeep);
+        showEmptyState();
       }
       if (state.selectedIds.size === 0) state.selectMode = false;
       await refreshSessions();
+      if (cwdKeep && !getCwd()) setCwd(cwdKeep);
       updateSelectModeUI();
 
       if (result.failed > 0) {
@@ -651,7 +712,7 @@
           "session-item" +
           (s.id === state.activeSessionId ? " active" : "") +
           (selected ? " selected" : "") +
-          (state.running && state.streamSessionId === s.id ? " live" : "");
+          (isSessionLive(s.id) ? " live" : "");
         btn.dataset.id = s.id;
         btn.dataset.project = project;
         btn.setAttribute("role", "listitem");
@@ -730,6 +791,7 @@
       for (const id of [...state.selectedIds]) {
         if (!state.sessions.some((s) => s.id === id)) state.selectedIds.delete(id);
       }
+      await refreshLiveRuns({ render: false });
       renderSessionList();
       setStatus(true, "Connected");
     } catch (err) {
@@ -1342,6 +1404,62 @@
     if (was !== on) renderSessionList();
   }
 
+  function nextTurnGen() {
+    state.turnGen += 1;
+    return state.turnGen;
+  }
+
+  function isSessionLive(id) {
+    if (!id) return false;
+    if (state.running && state.streamSessionId === id) return true;
+    return state.liveSessionIds.has(id);
+  }
+
+  /** Drop the SSE listener without cancelling Grok — the child keeps working. */
+  function detachLiveTurn() {
+    if (!state.running && !state.abortController) return false;
+    const sid = state.streamSessionId;
+    if (sid) state.liveSessionIds.add(sid);
+    nextTurnGen();
+    const ac = state.abortController;
+    state.abortController = null;
+    state.liveShell = null;
+    state.attachingRunId = null;
+    state.runId = null;
+    state.streamSessionId = null;
+    if (ac && !ac.signal.aborted) {
+      try {
+        ac.abort();
+      } catch {
+        /* ignore */
+      }
+    }
+    setRunning(false);
+    hideReconnectStatus();
+    renderSessionList();
+    void refreshSessions();
+    return true;
+  }
+
+  async function refreshLiveRuns({ render = true } = {}) {
+    try {
+      const data = await api("/api/runs");
+      if (!data || !Array.isArray(data.runs)) return;
+      const next = new Set();
+      for (const r of data.runs) {
+        if (r && r.sessionId) next.add(r.sessionId);
+      }
+      if (state.running && state.streamSessionId) next.add(state.streamSessionId);
+      const changed =
+        next.size !== state.liveSessionIds.size ||
+        [...next].some((id) => !state.liveSessionIds.has(id));
+      state.liveSessionIds = next;
+      if (changed && render) renderSessionList();
+    } catch {
+      /* keep last known live set */
+    }
+  }
+
   /** Chat is never gated on picking a folder. Unlock + focus the composer. */
   function unlockPrompt({ focus = true } = {}) {
     if (!els.prompt) return;
@@ -1390,6 +1508,9 @@
     }
     const sameLive =
       state.running && state.streamSessionId === id && state.liveShell;
+    if (!sameLive && (state.running || state.abortController)) {
+      detachLiveTurn();
+    }
     setActiveSessionId(id);
     state.draftMode = false;
     expandProjectForSession(id);
@@ -1454,16 +1575,14 @@
    * @param {{ cwd?: string }} [opts]
    */
   function startNewSession(opts = {}) {
-    if (state.running) return;
+    if (state.running || state.abortController) detachLiveTurn();
+    if (state.selectMode) setSelectMode(false);
     state.activeSessionId = null;
     if (!opts.preserveLast) persistLastSession(null);
     state.draftMode = true;
     setActiveMeta(null);
-    if (opts.cwd) {
-      setCwd(opts.cwd);
-    } else if (!getCwd()) {
-      setCwd(guessDefaultCwd());
-    }
+    const cwd = (opts.cwd || rememberedCwd() || guessDefaultCwd() || "").trim();
+    if (cwd) setCwd(cwd);
     clearAttachments();
     showEmptyState();
     renderSessionList();
@@ -1478,15 +1597,15 @@
     return "";
   }
 
-  /** New button: desktop keeps current folder; mobile must pick a known project. */
+  /** New button: keep the current folder. Only ask on mobile when none is set. */
   function onNewSessionClick() {
-    if (state.running) return;
-    if (isMobileViewport()) {
+    const cwd = rememberedCwd();
+    if (isMobileViewport() && !cwd) {
       document.body.classList.remove("sidebar-open");
       openMobileFolderPicker();
       return;
     }
-    startNewSession();
+    startNewSession({ cwd: cwd || undefined });
   }
 
   function escapeHtml(s) {
@@ -1505,7 +1624,7 @@
       els.prompt.value = "";
       autoResizePrompt();
       clearAttachments();
-      startNewSession({ cwd: getCwd() || undefined });
+      startNewSession({ cwd: rememberedCwd() || undefined });
       return true;
     }
     return false;
@@ -1549,6 +1668,7 @@
     els.btnSend.disabled = true;
 
     const shell = appendAssistantShell();
+    const turnGen = nextTurnGen();
     setRunning(true, pendingImages.length ? "Uploading image…" : "Thinking…");
 
     const body = {
@@ -1658,7 +1778,12 @@
       }
     } finally {
       clearInterval(heartbeat);
-      await finishTurn(gotSessionId);
+      if (turnGen === state.turnGen) {
+        await finishTurn(gotSessionId);
+      } else if (gotSessionId) {
+        state.liveSessionIds.add(gotSessionId);
+        void refreshLiveRuns();
+      }
     }
   }
 
@@ -1961,7 +2086,7 @@
     if (!sessionId || state.running) return;
     const active = await fetchActiveRun(sessionId);
     if (!active?.runId) return;
-    if (state.activeSessionId !== sessionId) return;
+    if (state.running || state.activeSessionId !== sessionId) return;
 
     const empty = els.messages.querySelector(".empty-state");
     if (empty) empty.remove();
@@ -1971,6 +2096,7 @@
     state.streamSessionId = sessionId;
     state.runId = active.runId;
 
+    const turnGen = nextTurnGen();
     const onSession = (sid) => applyStreamSession(sid, shell);
 
     setRunning(true, "Reconnecting…");
@@ -1995,16 +2121,28 @@
         appendShellWarning(shell, err.message || "Reconnect failed");
       }
     } finally {
-      await finishTurn(sessionId);
+      if (turnGen === state.turnGen) {
+        await finishTurn(sessionId);
+      } else if (sessionId) {
+        state.liveSessionIds.add(sessionId);
+        void refreshLiveRuns();
+      }
     }
   }
 
   function applyStreamSession(sid, shell) {
     if (!sid) return;
+    if (shell && state.liveShell && state.liveShell !== shell) return;
+    if (shell && !state.liveShell && !state.running) {
+      state.liveSessionIds.add(sid);
+      return;
+    }
     state.streamSessionId = sid;
     if (shell) shell.sessionId = sid;
+    state.liveSessionIds.add(sid);
     const viewingStream =
-      state.draftMode || !state.activeSessionId || state.activeSessionId === sid;
+      (!shell || state.liveShell === shell) &&
+      (state.draftMode || !state.activeSessionId || state.activeSessionId === sid);
     if (!viewingStream) return;
     setActiveSessionId(sid);
     state.draftMode = false;
@@ -2160,6 +2298,7 @@
   async function finishTurn(sessionId) {
     hideReconnectStatus();
     setRunning(false);
+    if (sessionId) state.liveSessionIds.delete(sessionId);
     state.runId = null;
     state.abortController = null;
     state.liveShell = null;
@@ -2209,7 +2348,9 @@
         if (data.runId) state.runId = data.runId;
         break;
       case "status":
-        if (data.message) els.runningText.textContent = data.message;
+        if (data.message && (!shell || state.liveShell === shell)) {
+          els.runningText.textContent = data.message;
+        }
         if (typeof onGrokActivity === "function" && data.pid) onGrokActivity();
         break;
       case "grok":
@@ -2238,33 +2379,38 @@
 
   function handleGrokEvent(evt, shell) {
     const type = evt.type;
+    const viewing = !shell || state.liveShell === shell;
     if (type === "text") {
       updateAssistantText(shell, evt.data || "");
-      els.runningText.textContent = "Writing…";
+      if (viewing) els.runningText.textContent = "Writing…";
     } else if (type === "thought") {
       const chunk = evt.data != null ? String(evt.data) : "";
       appendThought(shell, chunk);
-      const snippet = chunk.replace(/\s+/g, " ").trim();
-      if (snippet) {
-        const short = snippet.length > 48 ? snippet.slice(0, 48) + "…" : snippet;
-        els.runningText.textContent = `Thinking… ${short}`;
-      } else {
-        els.runningText.textContent = "Thinking…";
+      if (viewing) {
+        const snippet = chunk.replace(/\s+/g, " ").trim();
+        if (snippet) {
+          const short = snippet.length > 48 ? snippet.slice(0, 48) + "…" : snippet;
+          els.runningText.textContent = `Thinking… ${short}`;
+        } else {
+          els.runningText.textContent = "Thinking…";
+        }
       }
     } else if (type === "tool_call" || type === "tool_call_update") {
       upsertTool(shell, evt);
-      const info = describeTool(evt);
-      const label = [info.kind, info.detail].filter(Boolean).join(" · ");
-      els.runningText.textContent =
-        info.status === "done"
-          ? `${label || "Tool"} done`
-          : label || "Using tools…";
+      if (viewing) {
+        const info = describeTool(evt);
+        const label = [info.kind, info.detail].filter(Boolean).join(" · ");
+        els.runningText.textContent =
+          info.status === "done"
+            ? `${label || "Tool"} done`
+            : label || "Using tools…";
+      }
     } else if (type === "error") {
       updateAssistantText(shell, `\n⚠️ ${evt.message || "error"}\n`);
       flushAssistantMarkdown(shell);
     } else if (type === "end") {
       const reason = String(evt.stopReason || evt.stop_reason || "").toLowerCase();
-      els.runningText.textContent = "Finishing…";
+      if (viewing) els.runningText.textContent = "Finishing…";
       if (reason === "cancelled" || reason === "max_tokens") {
         const note =
           reason === "cancelled"
@@ -2425,12 +2571,12 @@
   }
   if (els.btnBulkArchive) {
     els.btnBulkArchive.addEventListener("click", () => {
-      runBulkAction("archive", [...state.selectedIds]);
+      runBulkAction("archive", selectedIdsSnapshot());
     });
   }
   if (els.btnBulkDelete) {
     els.btnBulkDelete.addEventListener("click", () => {
-      runBulkAction("delete", [...state.selectedIds]);
+      runBulkAction("delete", selectedIdsSnapshot());
     });
   }
 
@@ -2443,9 +2589,9 @@
       hideContextMenu();
       if (!id) return;
       if (action === "archive") {
-        runBulkAction("archive", [id]);
+        runBulkAction("archive", idsForContextAction(id));
       } else if (action === "delete") {
-        runBulkAction("delete", [id]);
+        runBulkAction("delete", idsForContextAction(id));
       } else if (action === "select") {
         state.selectMode = true;
         state.selectedIds.add(id);
@@ -3045,7 +3191,7 @@
     }
 
     await refreshSessions();
-    if (!getCwd()) setCwd(guessDefaultCwd());
+    if (!getCwd()) setCwd(rememberedCwd() || guessDefaultCwd());
     const lastId = readLastSessionId();
     const found = lastId && state.sessions.some((s) => s.id === lastId);
     if (found) {
@@ -3058,7 +3204,9 @@
 
     if (!sessionRefreshTimer) {
       sessionRefreshTimer = setInterval(() => {
-        if (!state.running && state.setupReady) refreshSessions();
+        if (!state.setupReady) return;
+        if (!state.running) refreshSessions();
+        else void refreshLiveRuns();
       }, 30000);
     }
     if (!state.usageTimer) {

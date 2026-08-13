@@ -1455,9 +1455,22 @@ function execFileAsync(bin, args, opts = {}) {
   });
 }
 
-/**
- * Permanently remove a session (CLI delete + FS cleanup fallback).
- */
+/** Remove a session directory from ~/.grok/sessions. */
+function removeSessionDir(session) {
+  if (!session?.path || !fs.existsSync(session.path)) return;
+  fs.rmSync(session.path, { recursive: true, force: true });
+}
+
+async function notifyCliSessionDeleted(sessionId) {
+  try {
+    await execFileAsync(GROK_BIN, ["sessions", "delete", sessionId], {
+      timeout: 8000,
+    });
+  } catch {
+    /* folder is already gone; CLI index update is best-effort */
+  }
+}
+
 async function deleteSession(sessionId) {
   const session = findSessionById(sessionId);
   if (!session) {
@@ -1466,31 +1479,28 @@ async function deleteSession(sessionId) {
     throw err;
   }
 
-  let cliError = null;
   try {
-    await execFileAsync(GROK_BIN, ["sessions", "delete", sessionId]);
-  } catch (err) {
-    cliError = err;
-  }
-
-  if (session.path && fs.existsSync(session.path)) {
+    removeSessionDir(session);
+  } catch (fsErr) {
     try {
-      fs.rmSync(session.path, { recursive: true, force: true });
-    } catch (fsErr) {
-      if (cliError) {
-        const err = new Error(
-          cliError.stderr?.toString?.().trim() ||
-            cliError.message ||
-            fsErr.message ||
-            "Failed to delete session"
-        );
-        err.code = "DELETE_FAILED";
-        throw err;
-      }
-      throw fsErr;
+      await execFileAsync(GROK_BIN, ["sessions", "delete", sessionId]);
+    } catch (cliError) {
+      const err = new Error(
+        cliError.stderr?.toString?.().trim() ||
+          cliError.message ||
+          fsErr.message ||
+          "Failed to delete session"
+      );
+      err.code = "DELETE_FAILED";
+      throw err;
     }
+    if (session.path && fs.existsSync(session.path)) {
+      fs.rmSync(session.path, { recursive: true, force: true });
+    }
+    return { id: sessionId, deleted: true };
   }
 
+  await notifyCliSessionDeleted(sessionId);
   return { id: sessionId, deleted: true };
 }
 
@@ -1568,21 +1578,44 @@ async function bulkSessionAction(action, ids) {
   }
 
   const results = [];
-  for (const id of list) {
-    try {
-      if (action === "delete") {
-        await deleteSession(id);
-      } else {
-        await archiveSession(id);
+  if (action === "delete") {
+    // Resolve every session first so later lookups don't depend on leftover CLI state.
+    const resolved = list.map((id) => ({ id, session: findSessionById(id) }));
+    for (const { id, session } of resolved) {
+      try {
+        if (!session) {
+          const err = new Error("Session not found");
+          err.code = "NOT_FOUND";
+          throw err;
+        }
+        removeSessionDir(session);
+        results.push({ id, ok: true });
+      } catch (err) {
+        results.push({
+          id,
+          ok: false,
+          error: err.message || String(err),
+          code: err.code || null,
+        });
       }
-      results.push({ id, ok: true });
-    } catch (err) {
-      results.push({
-        id,
-        ok: false,
-        error: err.message || String(err),
-        code: err.code || null,
-      });
+    }
+    const deleted = results.filter((r) => r.ok).map((r) => r.id);
+    for (const id of deleted) {
+      await notifyCliSessionDeleted(id);
+    }
+  } else {
+    for (const id of list) {
+      try {
+        await archiveSession(id);
+        results.push({ id, ok: true });
+      } catch (err) {
+        results.push({
+          id,
+          ok: false,
+          error: err.message || String(err),
+          code: err.code || null,
+        });
+      }
     }
   }
 
