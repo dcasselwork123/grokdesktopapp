@@ -832,7 +832,7 @@ body.select-mode .session-item .check {
   word-break: break-word;
 }
 
-.msg.assistant .body :is(p, ul, ol, pre, blockquote) {
+.msg.assistant .body :is(p, ul, ol, pre, blockquote, .md-table-wrap) {
   margin: 0 0 0.75em;
 }
 
@@ -2057,6 +2057,15 @@ body.select-mode .session-item .check {
   body.is-mobile #modal-backdrop:not(.open-from-user) {
     /* still controlled by .hidden */
   }
+
+  .msg .md-table {
+    font-size: 12.5px;
+  }
+
+  .msg .md-table th,
+  .msg .md-table td {
+    padding: 6px 8px;
+  }
 }
 
 /* simple markdown-ish helpers applied by JS */
@@ -2067,4 +2076,43 @@ body.select-mode .session-item .check {
 .msg .md-li {
   margin-left: 1.1em;
   list-style: disc;
+}
+
+.msg .md-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+  white-space: normal;
+}
+
+.msg .md-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.msg .md-table th,
+.msg .md-table td {
+  border: 1px solid var(--border);
+  padding: 7px 10px;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.msg .md-table th {
+  background: var(--bg-elevated);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.msg .md-table td {
+  background: var(--bg);
+}
+
+.msg .md-table tbody tr:nth-child(even) td {
+  background: var(--tool-bg);
 }

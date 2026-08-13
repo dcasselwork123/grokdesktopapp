@@ -752,7 +752,122 @@
     els.messages.appendChild(div);
   }
 
-  /** Minimal markdown → HTML (bold, code, fences, lists, headers). */
+  /** Split a markdown table row on `|`, ignoring pipes inside `inline code`. */
+  function splitTableCells(line) {
+    let s = String(line || "").trim();
+    if (s.startsWith("|")) s = s.slice(1);
+    if (s.endsWith("|")) s = s.slice(0, -1);
+    const cells = [];
+    let cur = "";
+    let inCode = false;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (ch === "`") inCode = !inCode;
+      if (ch === "|" && !inCode) {
+        cells.push(cur.trim());
+        cur = "";
+      } else {
+        cur += ch;
+      }
+    }
+    cells.push(cur.trim());
+    return cells;
+  }
+
+  function isMarkdownTableRow(line) {
+    if (!line || line.startsWith("<")) return false;
+    return /^\s*\|/.test(line);
+  }
+
+  function isMarkdownTableSeparator(line) {
+    if (!isMarkdownTableRow(line) && !/^\s*:?-+:?\s*\|/.test(line)) return false;
+    const cells = splitTableCells(line);
+    return cells.length > 0 && cells.every((c) => /^:?-+:?$/.test(c));
+  }
+
+  function tableAlignFromCell(cell) {
+    const left = cell.startsWith(":");
+    const right = cell.endsWith(":");
+    if (left && right) return "center";
+    if (right) return "right";
+    return "left";
+  }
+
+  function renderMarkdownTable(headers, rows, aligns) {
+    const colCount = Math.max(
+      headers.length,
+      aligns.length,
+      ...rows.map((r) => r.length),
+      1
+    );
+    const pad = (arr) => {
+      const out = arr.slice(0, colCount);
+      while (out.length < colCount) out.push("");
+      return out;
+    };
+    const alignFor = (i) => aligns[i] || "left";
+    const cell = (tag, text, i) => {
+      const align = alignFor(i);
+      const style = align !== "left" ? ` style="text-align:${align}"` : "";
+      return `<${tag}${style}>${text || ""}</${tag}>`;
+    };
+    const head = pad(headers)
+      .map((h, i) => cell("th", h, i))
+      .join("");
+    const body = rows
+      .map((row) => `<tr>${pad(row).map((c, i) => cell("td", c, i)).join("")}</tr>`)
+      .join("");
+    return `<div class="md-table-wrap"><table class="md-table"><thead><tr>${head}</tr></thead>${
+      body ? `<tbody>${body}</tbody>` : ""
+    }</table></div>`;
+  }
+
+  /** Turn GFM pipe tables into HTML. Skips fenced-code blocks. */
+  function convertMarkdownTables(text) {
+    const lines = text.split("\n");
+    const out = [];
+    let i = 0;
+    let inPre = false;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (inPre) {
+        out.push(line);
+        if (line.includes("</pre>")) inPre = false;
+        i++;
+        continue;
+      }
+      if (line.includes("<pre")) {
+        out.push(line);
+        if (!line.includes("</pre>")) inPre = true;
+        i++;
+        continue;
+      }
+      if (
+        i + 1 < lines.length &&
+        isMarkdownTableRow(line) &&
+        isMarkdownTableSeparator(lines[i + 1])
+      ) {
+        const headers = splitTableCells(line);
+        const aligns = splitTableCells(lines[i + 1]).map(tableAlignFromCell);
+        const rows = [];
+        i += 2;
+        while (i < lines.length && isMarkdownTableRow(lines[i]) && !isMarkdownTableSeparator(lines[i])) {
+          rows.push(splitTableCells(lines[i]));
+          i++;
+        }
+        // Isolate from surrounding text so paragraph wrapping does not wrap the table.
+        if (out.length && out[out.length - 1] !== "") out.push("");
+        out.push(renderMarkdownTable(headers, rows, aligns));
+        if (i < lines.length && lines[i] !== "") out.push("");
+        continue;
+      }
+      out.push(line);
+      i++;
+    }
+    return out.join("\n");
+  }
+
+  /** Minimal markdown → HTML (bold, code, fences, lists, headers, tables). */
   function renderMarkdown(text) {
     if (!text) return "";
     const escaped = text
@@ -764,6 +879,9 @@
     let html = escaped.replace(/```([\w-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
       return `<pre><code class="lang-${lang || "text"}">${code.replace(/\n$/, "")}</code></pre>`;
     });
+
+    // GFM tables before inline so `|` inside `code` stays in one cell
+    html = convertMarkdownTables(html);
 
     // inline code
     html = html.replace(/`([^`\n]+)`/g, "<code>$1</code>");
