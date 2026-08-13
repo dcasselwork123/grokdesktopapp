@@ -49,6 +49,11 @@
     setupInstallCmd: $("#setup-install-cmd"),
     setupActions: $("#setup-actions"),
     setupHint: $("#setup-hint"),
+    reconnectBanner: document.getElementById("reconnect-banner"),
+    sessionBanner: document.getElementById("session-banner"),
+    sessionBannerText: document.getElementById("session-banner-text"),
+    sessionBannerAction: document.getElementById("session-banner-action"),
+    sessionBannerDismiss: document.getElementById("session-banner-dismiss"),
   };
 
   const state = {
@@ -60,6 +65,9 @@
     running: false,
     runId: null,
     abortController: null,
+    liveShell: null,
+    streamSessionId: null,
+    attachingRunId: null,
     token: null,
     draftMode: true, // true until first message of a new chat
     attachments: [], // { id, name, mimeType, dataUrl }
@@ -82,9 +90,33 @@
   // Keep attachments small so vision is fast and uploads stay reliable
   const MAX_IMAGE_EDGE = 1280;
   const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+  const LAST_SESSION_KEY = "grok_desktop_last_session";
+  const MD_DEBOUNCE_MS = 64;
 
   function isMobileViewport() {
     return window.matchMedia("(max-width: 800px)").matches;
+  }
+
+  function persistLastSession(id) {
+    try {
+      if (id) localStorage.setItem(LAST_SESSION_KEY, id);
+      else localStorage.removeItem(LAST_SESSION_KEY);
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }
+
+  function readLastSessionId() {
+    try {
+      return localStorage.getItem(LAST_SESSION_KEY);
+    } catch {
+      return null;
+    }
+  }
+
+  function setActiveSessionId(id) {
+    state.activeSessionId = id || null;
+    persistLastSession(state.activeSessionId);
   }
 
   function isElectron() {
@@ -521,7 +553,7 @@
       for (const id of removed) {
         state.selectedIds.delete(id);
         if (state.activeSessionId === id) {
-          state.activeSessionId = null;
+          setActiveSessionId(null);
           state.draftMode = true;
           setActiveMeta(null);
           showEmptyState();
@@ -609,7 +641,8 @@
         btn.className =
           "session-item" +
           (s.id === state.activeSessionId ? " active" : "") +
-          (selected ? " selected" : "");
+          (selected ? " selected" : "") +
+          (state.running && state.streamSessionId === s.id ? " live" : "");
         btn.dataset.id = s.id;
         btn.dataset.project = project;
         btn.setAttribute("role", "listitem");
@@ -913,16 +946,51 @@
       bodyEl: wrap.querySelector(".body"),
       text: "",
       toolMap: new Map(),
+      sessionId: state.activeSessionId,
     };
   }
 
-  function updateAssistantText(shell, chunk) {
-    shell.text += chunk;
+  function shouldRenderShell(shell) {
+    if (!shell || !shell.bodyEl) return false;
+    if (shell.el && !shell.el.isConnected) return false;
+    if (
+      shell.sessionId &&
+      state.activeSessionId &&
+      shell.sessionId !== state.activeSessionId
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  function flushAssistantMarkdown(shell) {
+    if (!shell) return;
+    if (shell.mdTimer) {
+      clearTimeout(shell.mdTimer);
+      shell.mdTimer = 0;
+    }
+    if (!shouldRenderShell(shell)) return;
     shell.bodyEl.innerHTML = renderMarkdown(shell.text);
     scrollToBottom();
   }
 
+  function scheduleAssistantMarkdown(shell) {
+    if (!shell || !shouldRenderShell(shell)) return;
+    if (shell.mdTimer) return;
+    shell.mdTimer = setTimeout(() => {
+      shell.mdTimer = 0;
+      flushAssistantMarkdown(shell);
+    }, MD_DEBOUNCE_MS);
+  }
+
+  function updateAssistantText(shell, chunk) {
+    if (!shell) return;
+    shell.text += chunk;
+    scheduleAssistantMarkdown(shell);
+  }
+
   function upsertTool(shell, { id, title, status, name }) {
+    if (!shell || !shouldRenderShell(shell) || !shell.toolsEl) return;
     let chip = shell.toolMap.get(id);
     if (!chip) {
       chip = document.createElement("div");
@@ -943,12 +1011,14 @@
   }
 
   function setRunning(on, text) {
+    const was = state.running;
     state.running = on;
     els.runningBar.classList.toggle("hidden", !on);
     if (text) els.runningText.textContent = text;
     els.prompt.disabled = on;
     if (els.btnAttach) els.btnAttach.disabled = on;
     updateSendEnabled();
+    if (was !== on) renderSessionList();
   }
 
   // ---------- Open session / new ----------
@@ -977,12 +1047,13 @@
   }
 
   async function openSession(id) {
-    if (state.running) return;
     if (state.selectMode) {
       toggleSessionSelected(id);
       return;
     }
-    state.activeSessionId = id;
+    const sameLive =
+      state.running && state.streamSessionId === id && state.liveShell;
+    setActiveSessionId(id);
     state.draftMode = false;
     expandProjectForSession(id);
     clearAttachments();
@@ -995,25 +1066,38 @@
       clearMessages();
       if (!data.messages?.length) {
         showEmptyState();
-        return;
-      }
-      for (const m of data.messages) {
-        if (m.role === "user") {
-          appendUserMessage(m.text);
-        } else {
-          const shell = appendAssistantShell();
-          if (m.tools?.length) {
-            for (const t of m.tools) {
-              upsertTool(shell, t);
+      } else {
+        for (const m of data.messages) {
+          if (m.role === "user") {
+            appendUserMessage(m.text);
+          } else {
+            const shell = appendAssistantShell();
+            if (m.tools?.length) {
+              for (const t of m.tools) {
+                upsertTool(shell, t);
+              }
+            }
+            if (m.text) {
+              shell.text = m.text;
+              shell.bodyEl.innerHTML = renderMarkdown(m.text);
             }
           }
-          if (m.text) {
-            shell.text = m.text;
-            shell.bodyEl.innerHTML = renderMarkdown(m.text);
-          }
         }
+        scrollToBottom();
       }
-      scrollToBottom();
+
+      if (sameLive && state.liveShell) {
+        const empty = els.messages.querySelector(".empty-state");
+        if (empty) empty.remove();
+        const fresh = reuseOrAppendAssistantShell();
+        rebindShell(state.liveShell, fresh);
+        showReconnectStatus("Live", "ok");
+        return;
+      }
+
+      if (!state.running) {
+        await maybeAttachActiveRun(id);
+      }
     } catch (err) {
       clearMessages();
       const div = document.createElement("div");
@@ -1030,6 +1114,7 @@
   function startNewSession(opts = {}) {
     if (state.running) return;
     state.activeSessionId = null;
+    if (!opts.preserveLast) persistLastSession(null);
     state.draftMode = true;
     setActiveMeta(null);
     if (opts.cwd) {
@@ -1106,7 +1191,7 @@
     // Folder changed after opening a session → never resume that session
     const cwdMismatch = !!(active && cwd && active.cwd && !cwdsEqual(cwd, active.cwd));
     if (cwdMismatch) {
-      state.activeSessionId = null;
+      setActiveSessionId(null);
       state.draftMode = true;
     }
     const isNew = state.draftMode || !state.activeSessionId || cwdMismatch;
@@ -1142,21 +1227,39 @@
     const headers = { "Content-Type": "application/json" };
     if (state.token) headers["X-Grok-Token"] = state.token;
 
+    const ac = new AbortController();
+    state.abortController = ac;
+    state.liveShell = shell;
+    state.streamSessionId = state.activeSessionId;
+    shell.sessionId = state.activeSessionId;
+
     let gotSessionId = state.activeSessionId;
     let gotGrokEvent = false;
     const sendStarted = Date.now();
+    const onSession = (sid) => {
+      gotSessionId = sid;
+      applyStreamSession(sid, shell);
+    };
+    const onGrokActivity = () => {
+      gotGrokEvent = true;
+    };
     // Heartbeat so long image turns never look frozen on one status line
     const heartbeat = setInterval(() => {
-      if (!state.running || gotGrokEvent) return;
+      if (!state.running || gotGrokEvent || state.attachingRunId) return;
       const secs = Math.round((Date.now() - sendStarted) / 1000);
       els.runningText.textContent = `Waiting for Grok… ${secs}s`;
     }, 3000);
+
+    let sawDone = false;
+    let aborted = false;
+    let streamStarted = false;
 
     try {
       const res = await fetch(apiUrl("/api/chat"), {
         method: "POST",
         headers,
         body: JSON.stringify(body),
+        signal: ac.signal,
       });
 
       if (!res.ok) {
@@ -1169,77 +1272,443 @@
         throw new Error(msg);
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      streamStarted = true;
+      sawDone = await readSseStream(res, shell, onSession, onGrokActivity);
 
+      if (!sawDone && !ac.signal.aborted && (state.runId || gotSessionId)) {
+        const rec = await tryReconnectRun({
+          runId: state.runId,
+          sessionId: gotSessionId,
+          shell,
+          onSession,
+          onGrokActivity,
+        });
+        sawDone = rec.ok;
+        aborted = rec.aborted;
+        if (!sawDone && !aborted) {
+          appendShellWarning(
+            shell,
+            "Connection lost — could not reconnect to the live turn."
+          );
+        }
+      } else if (ac.signal.aborted) {
+        aborted = true;
+      }
+    } catch (err) {
+      if (err.name === "AbortError" || ac.signal.aborted) {
+        aborted = true;
+      } else if (streamStarted || state.runId) {
+        const rec = await tryReconnectRun({
+          runId: state.runId,
+          sessionId: gotSessionId,
+          shell,
+          onSession,
+          onGrokActivity,
+        });
+        sawDone = rec.ok;
+        aborted = rec.aborted;
+        if (!sawDone && !aborted) {
+          appendShellWarning(shell, err.message || String(err));
+        }
+      } else {
+        appendShellWarning(shell, err.message || String(err));
+      }
+    } finally {
+      clearInterval(heartbeat);
+      await finishTurn(gotSessionId);
+    }
+  }
+
+  function appendShellWarning(shell, message) {
+    if (!shell) return;
+    const note = `⚠️ ${message}`;
+    if (shell.text) shell.text += "\n\n" + note;
+    else shell.text = note;
+    flushAssistantMarkdown(shell);
+  }
+
+  function formatDoneWarning(data) {
+    if (!data || data.ok) return "";
+    if (data.stderr) {
+      return `⚠️ Grok exited with code ${data.code}\n\n${String(data.stderr).slice(-1500)}`;
+    }
+    if (data.poisonedHint) {
+      return (
+        `⚠️ Grok exited unexpectedly (code ${data.code ?? "?"}). ` +
+        `This session may be stuck after a crash — start a New chat and continue there.`
+      );
+    }
+    if (data.code != null && data.code !== 0) {
+      return `⚠️ Grok exited with code ${data.code}`;
+    }
+    return "⚠️ Turn ended with an error.";
+  }
+
+  function ensureAbortController() {
+    if (!state.abortController || state.abortController.signal.aborted) {
+      state.abortController = new AbortController();
+    }
+    return state.abortController;
+  }
+
+  function sleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+        return;
+      }
+      const t = setTimeout(resolve, ms);
+      if (!signal) return;
+      const onAbort = () => {
+        clearTimeout(t);
+        reject(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  function ensureReconnectBanner() {
+    if (els.reconnectBanner) return els.reconnectBanner;
+    if (els.sessionBanner || !els.messages || !els.messages.parentNode) return null;
+    const el = document.createElement("div");
+    el.id = "reconnect-banner";
+    el.setAttribute("role", "status");
+    el.style.cssText =
+      "display:none;padding:6px 16px;font-size:12px;line-height:1.35;opacity:0.88;";
+    els.messages.parentNode.insertBefore(el, els.messages);
+    els.reconnectBanner = el;
+    return el;
+  }
+
+  function showReconnectStatus(text, kind) {
+    const msg = text || "";
+    if (els.runningText && msg) els.runningText.textContent = msg;
+
+    const rb = els.reconnectBanner || ensureReconnectBanner();
+    if (rb) {
+      rb.textContent = msg;
+      rb.hidden = !msg;
+      rb.classList.toggle("hidden", !msg);
+      rb.style.display = msg ? "" : "none";
+    }
+
+    if (els.sessionBanner && els.sessionBannerText) {
+      els.sessionBannerText.textContent = msg;
+      els.sessionBanner.classList.remove("info", "warn", "ok");
+      if (msg) els.sessionBanner.classList.add(kind || "info");
+      els.sessionBanner.classList.toggle("hidden", !msg);
+    }
+  }
+
+  function hideReconnectStatus() {
+    if (els.reconnectBanner) {
+      els.reconnectBanner.textContent = "";
+      els.reconnectBanner.hidden = true;
+      els.reconnectBanner.classList.add("hidden");
+      els.reconnectBanner.style.display = "none";
+    }
+    if (els.sessionBanner) {
+      els.sessionBanner.classList.add("hidden");
+      els.sessionBanner.classList.remove("info", "warn", "ok");
+      if (els.sessionBannerText) els.sessionBannerText.textContent = "";
+    }
+  }
+
+  function reuseOrAppendAssistantShell() {
+    const nodes = els.messages.querySelectorAll(".msg.assistant");
+    const last = nodes[nodes.length - 1];
+    if (last) {
+      const bodyEl = last.querySelector(".body");
+      const hasText = !!(bodyEl && bodyEl.textContent && bodyEl.textContent.trim());
+      if (!hasText) {
+        return {
+          el: last,
+          toolsEl: last.querySelector(".tools"),
+          bodyEl,
+          text: "",
+          toolMap: new Map(),
+          sessionId: state.activeSessionId,
+        };
+      }
+    }
+    const empty = els.messages.querySelector(".empty-state");
+    if (empty) empty.remove();
+    return appendAssistantShell();
+  }
+
+  function rebindShell(shell, fresh) {
+    if (!shell || !fresh) return;
+    shell.el = fresh.el;
+    shell.toolsEl = fresh.toolsEl;
+    shell.bodyEl = fresh.bodyEl;
+    if (shell.text) flushAssistantMarkdown(shell);
+    if (shell.toolMap && shell.toolsEl) {
+      for (const chip of shell.toolMap.values()) {
+        if (chip && !shell.toolsEl.contains(chip)) shell.toolsEl.appendChild(chip);
+      }
+    }
+  }
+
+  async function fetchActiveRun(sessionId) {
+    if (!sessionId) return null;
+    try {
+      const data = await api(`/api/runs?sessionId=${encodeURIComponent(sessionId)}`);
+      if (!data || data.run === null) return null;
+      if (data.runId) return data;
+      if (data.run && data.run.runId) return data.run;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function readSseStream(res, shell, onSession, onGrokActivity) {
+    if (!res || !res.body) return false;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let sawDone = false;
+    try {
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-
         let sep;
         while ((sep = buffer.indexOf("\n\n")) >= 0) {
           const raw = buffer.slice(0, sep);
           buffer = buffer.slice(sep + 2);
-          handleSseBlock(
-            raw,
-            shell,
-            (sid) => {
-              gotSessionId = sid;
-              state.activeSessionId = sid;
-              state.draftMode = false;
-              els.sessionIdHint.textContent = sid.slice(0, 8) + "…";
-            },
-            () => {
-              gotGrokEvent = true;
-            }
-          );
+          const ev = handleSseBlock(raw, shell, onSession, onGrokActivity);
+          if (ev === "done") sawDone = true;
         }
       }
-    } catch (err) {
-      if (shell.text) shell.text += "\n\n";
-      shell.text += `⚠️ ${err.message || err}`;
-      shell.bodyEl.innerHTML = renderMarkdown(shell.text);
-    } finally {
-      clearInterval(heartbeat);
-      setRunning(false);
-      state.runId = null;
-      await refreshSessions();
-      if (gotSessionId) {
-        const s = state.sessions.find((x) => x.id === gotSessionId);
-        if (s) setActiveMeta(s);
-        renderSessionList();
+      if (buffer.trim()) {
+        const ev = handleSseBlock(buffer, shell, onSession, onGrokActivity);
+        if (ev === "done") sawDone = true;
       }
-      els.prompt.focus();
+    } finally {
+      flushAssistantMarkdown(shell);
     }
+    return sawDone;
+  }
+
+  async function attachToRun(runId, opts = {}) {
+    const runKey = String(runId || "");
+    if (!runKey) return { attached: false, sawDone: false };
+    if (state.abortController?.signal?.aborted) {
+      return { attached: false, sawDone: false, aborted: true };
+    }
+    if (state.attachingRunId === runKey) {
+      return { attached: false, sawDone: false };
+    }
+
+    const sessionId = opts.sessionId || state.activeSessionId;
+    let shell = opts.shell;
+    const viewingThis =
+      !sessionId || !state.activeSessionId || sessionId === state.activeSessionId;
+
+    if (!shell || (shell.el && !shell.el.isConnected)) {
+      if (viewingThis) {
+        const empty = els.messages.querySelector(".empty-state");
+        if (empty) empty.remove();
+        shell = reuseOrAppendAssistantShell();
+        shell.sessionId = sessionId;
+      } else if (!shell) {
+        shell = {
+          el: null,
+          toolsEl: null,
+          bodyEl: null,
+          text: "",
+          toolMap: new Map(),
+          sessionId,
+        };
+      }
+    }
+
+    state.attachingRunId = runKey;
+    state.runId = runKey;
+    state.liveShell = shell;
+    state.streamSessionId = sessionId || null;
+    setRunning(true, "Reconnecting…");
+    showReconnectStatus("Reconnecting…", "info");
+
+    const ac = ensureAbortController();
+    const headers = {};
+    if (state.token) headers["X-Grok-Token"] = state.token;
+
+    try {
+      const res = await fetch(apiUrl(`/api/chat/runs/${encodeURIComponent(runKey)}`), {
+        headers,
+        signal: ac.signal,
+      });
+      if (!res.ok || !res.body) {
+        return { attached: false, sawDone: false };
+      }
+      showReconnectStatus("Live — reattached", "ok");
+      setRunning(true, "Live — reattached");
+      const sawDone = await readSseStream(
+        res,
+        shell,
+        opts.onSession,
+        opts.onGrokActivity
+      );
+      return { attached: true, sawDone };
+    } catch (err) {
+      if (err.name === "AbortError" || ac.signal.aborted) {
+        return { attached: true, sawDone: false, aborted: true };
+      }
+      throw err;
+    } finally {
+      if (state.attachingRunId === runKey) state.attachingRunId = null;
+    }
+  }
+
+  async function tryReconnectRun({
+    runId,
+    sessionId,
+    shell,
+    onSession,
+    onGrokActivity,
+  }) {
+    const delays = [1000, 2000, 3000];
+    for (let i = 0; i < delays.length; i++) {
+      if (state.abortController?.signal?.aborted) {
+        return { ok: false, aborted: true };
+      }
+      showReconnectStatus(`Reconnecting… (${i + 1}/3)`, "info");
+      setRunning(true, `Reconnecting… (${i + 1}/3)`);
+      try {
+        await sleep(delays[i], state.abortController?.signal);
+      } catch (err) {
+        if (err.name === "AbortError") return { ok: false, aborted: true };
+      }
+
+      let id = runId;
+      if (sessionId) {
+        const active = await fetchActiveRun(sessionId);
+        if (active?.runId) id = active.runId;
+      }
+      if (!id) continue;
+
+      try {
+        const result = await attachToRun(id, {
+          shell,
+          sessionId,
+          onSession,
+          onGrokActivity,
+        });
+        if (result.aborted) return { ok: false, aborted: true };
+        if (result.sawDone) return { ok: true };
+        if (result.attached) runId = id;
+      } catch (err) {
+        if (err.name === "AbortError") return { ok: false, aborted: true };
+      }
+    }
+    return { ok: false, aborted: false };
+  }
+
+  async function maybeAttachActiveRun(sessionId) {
+    if (!sessionId || state.running) return;
+    const active = await fetchActiveRun(sessionId);
+    if (!active?.runId) return;
+    if (state.activeSessionId !== sessionId) return;
+
+    const empty = els.messages.querySelector(".empty-state");
+    if (empty) empty.remove();
+    const shell = reuseOrAppendAssistantShell();
+    shell.sessionId = sessionId;
+    state.liveShell = shell;
+    state.streamSessionId = sessionId;
+    state.runId = active.runId;
+
+    const onSession = (sid) => applyStreamSession(sid, shell);
+
+    setRunning(true, "Reconnecting…");
+    showReconnectStatus("Reconnecting…", "info");
+
+    try {
+      const first = await attachToRun(active.runId, {
+        shell,
+        sessionId,
+        onSession,
+      });
+      if (!first.sawDone && !first.aborted) {
+        await tryReconnectRun({
+          runId: active.runId,
+          sessionId,
+          shell,
+          onSession,
+        });
+      }
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        appendShellWarning(shell, err.message || "Reconnect failed");
+      }
+    } finally {
+      await finishTurn(sessionId);
+    }
+  }
+
+  function applyStreamSession(sid, shell) {
+    if (!sid) return;
+    state.streamSessionId = sid;
+    if (shell) shell.sessionId = sid;
+    const viewingStream =
+      state.draftMode || !state.activeSessionId || state.activeSessionId === sid;
+    if (!viewingStream) return;
+    setActiveSessionId(sid);
+    state.draftMode = false;
+    if (els.sessionIdHint) els.sessionIdHint.textContent = sid.slice(0, 8) + "…";
+  }
+
+  async function finishTurn(sessionId) {
+    hideReconnectStatus();
+    setRunning(false);
+    state.runId = null;
+    state.abortController = null;
+    state.liveShell = null;
+    state.streamSessionId = null;
+    state.attachingRunId = null;
+    await refreshSessions();
+    if (sessionId && state.activeSessionId === sessionId) {
+      const s = state.sessions.find((x) => x.id === sessionId);
+      if (s) setActiveMeta(s);
+    }
+    renderSessionList();
+    els.prompt.focus();
   }
 
   function handleSseBlock(raw, shell, onSession, onGrokActivity) {
     let event = "message";
-    let dataLine = "";
-    for (const line of raw.split("\n")) {
+    const dataParts = [];
+    for (const rawLine of raw.split("\n")) {
+      const line = rawLine.replace(/\r$/, "");
+      if (!line || line.startsWith(":")) continue;
       if (line.startsWith("event:")) event = line.slice(6).trim();
-      else if (line.startsWith("data:")) dataLine += line.slice(5).trim();
+      else if (line.startsWith("data:")) {
+        let val = line.slice(5);
+        if (val.startsWith(" ")) val = val.slice(1);
+        dataParts.push(val);
+      }
     }
-    if (!dataLine) return;
+    const dataLine = dataParts.join("\n");
+    if (!dataLine) return event;
 
     let data;
     try {
       data = JSON.parse(dataLine);
     } catch {
-      return;
+      return event;
     }
 
     switch (event) {
       case "start":
-        if (data.sessionId) onSession(data.sessionId);
+        if (data.sessionId && typeof onSession === "function") onSession(data.sessionId);
         break;
       case "session":
-        if (data.sessionId) onSession(data.sessionId);
+        if (data.sessionId && typeof onSession === "function") onSession(data.sessionId);
         break;
       case "run":
-        state.runId = data.runId;
+        if (data.runId) state.runId = data.runId;
         break;
       case "status":
         if (data.message) els.runningText.textContent = data.message;
@@ -1250,29 +1719,23 @@
         handleGrokEvent(data, shell);
         break;
       case "error":
-        if (shell.text) shell.text += "\n\n";
-        shell.text += `⚠️ ${data.message || "Error"}`;
-        shell.bodyEl.innerHTML = renderMarkdown(shell.text);
+        if (shell) appendShellWarning(shell, data.message || "Error");
         break;
       case "done":
-        if (data.sessionId) onSession(data.sessionId);
-        // Prefer the detailed error event; fall back if only done arrived
-        if (!data.ok && !shell.text) {
-          if (data.stderr) {
-            shell.text = `⚠️ Grok exited with code ${data.code}\n\n${data.stderr.slice(-1500)}`;
-          } else if (data.poisonedHint) {
-            shell.text =
-              `⚠️ Grok exited unexpectedly (code ${data.code ?? "?"}). ` +
-              `This session may be stuck after a crash — start a New chat and continue there.`;
-          } else if (data.code != null && data.code !== 0) {
-            shell.text = `⚠️ Grok exited with code ${data.code}`;
+        if (data.sessionId && typeof onSession === "function") onSession(data.sessionId);
+        if (!data.ok && shell) {
+          const warning = formatDoneWarning(data);
+          if (warning) {
+            if (shell.text) shell.text += "\n\n" + warning;
+            else shell.text = warning;
           }
-          if (shell.text) shell.bodyEl.innerHTML = renderMarkdown(shell.text);
         }
+        flushAssistantMarkdown(shell);
         break;
       default:
         break;
     }
+    return event;
   }
 
   function handleGrokEvent(evt, shell) {
@@ -1306,10 +1769,28 @@
       });
     } else if (type === "error") {
       updateAssistantText(shell, `\n⚠️ ${evt.message || "error"}\n`);
+      flushAssistantMarkdown(shell);
+    } else if (type === "end") {
+      const reason = String(evt.stopReason || evt.stop_reason || "").toLowerCase();
+      els.runningText.textContent = "Finishing…";
+      if (reason === "cancelled" || reason === "max_tokens") {
+        const note =
+          reason === "cancelled"
+            ? "⚠️ Turn cancelled."
+            : "⚠️ Stopped at the token limit.";
+        appendShellWarning(shell, note.replace(/^⚠️\s*/, ""));
+      }
     }
   }
 
   async function stopRun() {
+    if (state.abortController) {
+      try {
+        state.abortController.abort();
+      } catch {
+        /* ignore */
+      }
+    }
     if (!state.runId) return;
     try {
       await api("/api/chat/cancel", {
@@ -1388,6 +1869,9 @@
 
   els.btnSend.addEventListener("click", sendPrompt);
   els.btnStop.addEventListener("click", stopRun);
+  if (els.sessionBannerDismiss) {
+    els.sessionBannerDismiss.addEventListener("click", () => hideReconnectStatus());
+  }
   els.btnNew.addEventListener("click", onNewSessionClick);
   els.btnRefresh.addEventListener("click", refreshSessions);
 
@@ -2022,7 +2506,13 @@
     }
 
     await refreshSessions();
-    startNewSession();
+    const lastId = readLastSessionId();
+    const found = lastId && state.sessions.some((s) => s.id === lastId);
+    if (found) {
+      await openSession(lastId);
+    } else {
+      startNewSession({ preserveLast: !!(lastId && state.sessions.length === 0) });
+    }
 
     if (!sessionRefreshTimer) {
       sessionRefreshTimer = setInterval(() => {

@@ -14,6 +14,16 @@ const path = require("path");
 const { createServer } = require("./httpApi");
 const { resolveAccessSettings } = require("./remoteAccess");
 
+process.on("uncaughtException", (err) => {
+  console.error(
+    "[Grok Desktop server] uncaughtException:",
+    err && err.stack ? err.stack : err
+  );
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[Grok Desktop server] unhandledRejection:", reason);
+});
+
 const access = resolveAccessSettings();
 const staticDir = path.join(__dirname, "..", "renderer");
 

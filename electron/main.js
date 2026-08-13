@@ -8,6 +8,46 @@ const { resolveAccessSettings } = require("../server/remoteAccess");
 let mainWindow = null;
 let api = null;
 let access = null;
+let showedUncaughtDialog = false;
+let crashReloadPending = false;
+
+function formatError(err) {
+  return err && err.stack ? err.stack : String(err);
+}
+
+function logUnexpected(kind, err) {
+  const message = formatError(err);
+  console.error(`[Grok Desktop] ${kind}:`, message);
+  if (showedUncaughtDialog) return;
+  showedUncaughtDialog = true;
+  const show = () => {
+    try {
+      dialog.showErrorBox(
+        "Grok Desktop hit an unexpected error",
+        message +
+          "\n\nThe app will keep running if it can. If things look stuck, quit and relaunch."
+      );
+    } catch {
+      /* dialog may fail if app not ready */
+    }
+  };
+  if (app.isReady()) show();
+  else app.whenReady().then(show).catch(() => {});
+}
+
+process.on("uncaughtException", (err) => {
+  logUnexpected("uncaughtException", err);
+});
+
+process.on("unhandledRejection", (reason) => {
+  logUnexpected("unhandledRejection", reason);
+});
+
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  console.log("[Grok Desktop] Another instance is already running — quitting this one.");
+  app.quit();
+}
 
 async function startApi() {
   if (api) return api;
@@ -20,6 +60,11 @@ async function startApi() {
 
   for (const port of portsToTry) {
     try {
+      if (port === 0) {
+        console.warn(
+          "[Grok Desktop] Configured ports busy — asking OS for any free port."
+        );
+      }
       api = await createServer({
         port,
         host: access.host, // default 0.0.0.0 → Tailscale-reachable
@@ -27,6 +72,11 @@ async function startApi() {
         token: access.token,
       });
       console.log(`[Grok Desktop] Local UI:  ${api.url}`);
+      if (api.port !== access.port) {
+        console.warn(
+          `[Grok Desktop] Bound ${api.port} instead of configured ${access.port} (that port was in use). Phone URL / token still match this process.`
+        );
+      }
       if (api.remote?.phoneUrl) {
         console.log(`[Grok Desktop] Phone URL: ${api.remote.phoneUrl}`);
       }
@@ -41,7 +91,9 @@ async function startApi() {
     } catch (err) {
       lastErr = err;
       if (err && err.code === "EADDRINUSE") {
-        console.warn(`[Grok Desktop] port ${port} in use, trying next…`);
+        console.warn(
+          `[Grok Desktop] port ${port} in use (first instance — leftover node or other process, not a second window). Trying next…`
+        );
         continue;
       }
       throw err;
@@ -51,7 +103,76 @@ async function startApi() {
   throw lastErr || new Error("Could not bind HTTP server");
 }
 
+function focusMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+  if (api?.url) createWindow(api.url);
+}
+
+function reloadWindowOnce(win, reason) {
+  if (crashReloadPending) {
+    console.warn(
+      `[Grok Desktop] Renderer ${reason} again before reload finished — not looping.`
+    );
+    return;
+  }
+  if (!win || win.isDestroyed()) {
+    console.warn(
+      `[Grok Desktop] Window gone after ${reason}; recreating (HTTP server stays up).`
+    );
+    if (api?.url) createWindow(api.url);
+    return;
+  }
+  crashReloadPending = true;
+  console.log(
+    `[Grok Desktop] Reloading window after ${reason}; HTTP server stays up so grok can finish.`
+  );
+  try {
+    win.webContents.reload();
+  } catch (err) {
+    crashReloadPending = false;
+    console.error("[Grok Desktop] Reload failed:", formatError(err));
+    if (api?.url) createWindow(api.url);
+  }
+}
+
+function attachWindowGuards(win) {
+  win.webContents.on("render-process-gone", (_event, details) => {
+    const reason = (details && details.reason) || "unknown";
+    const exitCode = details && details.exitCode;
+    console.error(
+      `[Grok Desktop] Renderer gone: ${reason}` +
+        (exitCode != null ? ` (exit ${exitCode})` : "")
+    );
+    if (reason === "clean-exit") return;
+    reloadWindowOnce(win, reason);
+  });
+
+  win.on("unresponsive", () => {
+    console.warn("[Grok Desktop] Window unresponsive.");
+    reloadWindowOnce(win, "unresponsive");
+  });
+
+  win.on("responsive", () => {
+    console.log("[Grok Desktop] Window responsive again.");
+  });
+
+  win.webContents.on("did-finish-load", () => {
+    crashReloadPending = false;
+  });
+}
+
 function createWindow(baseUrl) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    focusMainWindow();
+    return mainWindow;
+  }
+
+  crashReloadPending = false;
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
@@ -78,50 +199,79 @@ function createWindow(baseUrl) {
     return { action: "deny" };
   });
 
+  attachWindowGuards(mainWindow);
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+
+  return mainWindow;
 }
 
 function showFatal(err) {
-  const message = err && err.stack ? err.stack : String(err);
+  const message = formatError(err);
+  const addrInUse = err && err.code === "EADDRINUSE";
   console.error("Failed to start:", message);
+  const tip = addrInUse
+    ? "Another Grok Desktop window or leftover node process is using this port.\n" +
+      "Close it (or free port 3847) and try again.\n" +
+      "If Windows Firewall prompts, allow access on private/Tailscale networks."
+    : "Tip: close other Grok Desktop windows, or free port 3847, then try again.\n" +
+      "If Windows Firewall prompts, allow access on private/Tailscale networks.";
   try {
-    dialog.showErrorBox(
-      "Grok Desktop failed to start",
-      message +
-        "\n\nTip: close other Grok Desktop windows, or free port 3847, then try again.\n" +
-        "If Windows Firewall prompts, allow access on private/Tailscale networks."
-    );
+    dialog.showErrorBox("Grok Desktop failed to start", message + "\n\n" + tip);
   } catch {
     /* dialog may fail if app not ready */
   }
 }
 
-app.whenReady().then(async () => {
-  try {
-    const { url } = await startApi();
-    createWindow(url);
-  } catch (err) {
-    showFatal(err);
-    app.quit();
-  }
+if (gotTheLock) {
+  app.on("second-instance", () => {
+    console.log("[Grok Desktop] Second launch requested — focusing existing window.");
+    focusMainWindow();
+  });
 
-  app.on("activate", async () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      try {
-        const { url } = await startApi();
-        createWindow(url);
-      } catch (err) {
-        showFatal(err);
+  app.whenReady().then(async () => {
+    try {
+      const { url } = await startApi();
+      createWindow(url);
+    } catch (err) {
+      showFatal(err);
+      app.quit();
+    }
+
+    app.on("activate", async () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        try {
+          const { url } = await startApi();
+          createWindow(url);
+        } catch (err) {
+          showFatal(err);
+        }
+      } else {
+        focusMainWindow();
       }
+    });
+  });
+
+  app.on("window-all-closed", () => {
+    console.log("[Grok Desktop] All windows closed.");
+    if (process.platform !== "darwin") {
+      console.log("[Grok Desktop] Quitting (Windows/Linux).");
+      app.quit();
     }
   });
-});
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
-});
+  app.on("before-quit", () => {
+    console.log("[Grok Desktop] before-quit");
+  });
+
+  app.on("will-quit", () => {
+    console.log(
+      "[Grok Desktop] will-quit — HTTP server and child processes will exit."
+    );
+  });
+}
 
 ipcMain.handle("get-api-info", () => ({
   url: api?.url || null,

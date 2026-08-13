@@ -147,10 +147,177 @@ function gatePageHtml() {
 </body></html>`;
 }
 
+const SSE_RECENT_LIMIT = 80;
+const SSE_KEEPALIVE_MS = 15000;
+const RUN_DONE_GRACE_MS = 30000;
+
+function formatSse(event, data) {
+  return `event: ${event}\ndata: ${JSON.stringify(data === undefined ? null : data)}\n\n`;
+}
+
+function safeWrite(res, chunk) {
+  try {
+    if (!res || res.writableEnded || res.destroyed) return false;
+    res.write(chunk);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeSseHeaders(res, extraHeaders = {}) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "Access-Control-Allow-Origin": "*",
+    "X-Accel-Buffering": "no",
+    ...extraHeaders,
+  });
+}
+
+function broadcast(record, event, data) {
+  record.lastEventAt = Date.now();
+  let storedEvent = event;
+  let storedData = data;
+  let chunk;
+  try {
+    chunk = formatSse(event, data);
+  } catch {
+    storedEvent = "error";
+    storedData = { message: "Failed to serialize event" };
+    try {
+      chunk = formatSse(storedEvent, storedData);
+    } catch {
+      return;
+    }
+  }
+  record.recent.push({ event: storedEvent, data: storedData });
+  if (record.recent.length > SSE_RECENT_LIMIT) record.recent.shift();
+  for (const client of [...record.clients]) {
+    if (!safeWrite(client, chunk)) record.clients.delete(client);
+  }
+}
+
+function attachSseClient(record, req, res) {
+  record.clients.add(res);
+  const detach = () => {
+    record.clients.delete(res);
+  };
+  req.on("close", detach);
+  req.on("error", detach);
+  res.on("close", detach);
+  res.on("error", detach);
+}
+
+function replayRecent(record, res) {
+  for (const frame of record.recent) {
+    let chunk;
+    try {
+      chunk = formatSse(frame.event, frame.data);
+    } catch {
+      continue;
+    }
+    if (!safeWrite(res, chunk)) return false;
+  }
+  return true;
+}
+
+function startRunKeepAlive(record) {
+  if (record.keepAlive) return;
+  record.keepAlive = setInterval(() => {
+    for (const client of [...record.clients]) {
+      if (!safeWrite(client, ":\n\n")) record.clients.delete(client);
+    }
+  }, SSE_KEEPALIVE_MS);
+  if (typeof record.keepAlive.unref === "function") record.keepAlive.unref();
+}
+
+function stopRunKeepAlive(record) {
+  if (!record.keepAlive) return;
+  clearInterval(record.keepAlive);
+  record.keepAlive = null;
+}
+
+function finalizeRun(activeRuns, record, donePayload) {
+  if (!record.done) {
+    record.done = donePayload;
+    broadcast(record, "done", donePayload);
+  }
+  stopRunKeepAlive(record);
+  const clients = [...record.clients];
+  record.clients.clear();
+  for (const client of clients) {
+    try {
+      if (!client.writableEnded && !client.destroyed) client.end();
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!record.graceTimer) {
+    record.graceTimer = setTimeout(() => {
+      activeRuns.delete(record.runId);
+    }, RUN_DONE_GRACE_MS);
+    if (typeof record.graceTimer.unref === "function") record.graceTimer.unref();
+  }
+}
+
+function registerRun(activeRuns, { runId, sessionId, emitter }) {
+  const record = {
+    runId,
+    sessionId: sessionId || null,
+    emitter,
+    startedAt: Date.now(),
+    lastEventAt: Date.now(),
+    recent: [],
+    clients: new Set(),
+    done: null,
+    keepAlive: null,
+    graceTimer: null,
+  };
+  activeRuns.set(runId, record);
+  startRunKeepAlive(record);
+  emitter.on("status", (data) => broadcast(record, "status", data));
+  emitter.on("event", (evt) => broadcast(record, "grok", evt));
+  emitter.on("sessionId", (id) => {
+    record.sessionId = id;
+    broadcast(record, "session", { sessionId: id });
+  });
+  emitter.on("error", (err) =>
+    broadcast(record, "error", { message: String(err.message || err) })
+  );
+  emitter.on("end", (info) => {
+    finalizeRun(activeRuns, record, info);
+  });
+  return record;
+}
+
+function findActiveRunBySessionId(activeRuns, sessionId) {
+  if (!sessionId) return null;
+  let best = null;
+  for (const record of activeRuns.values()) {
+    if (record.sessionId !== sessionId || record.done) continue;
+    if (!best || record.startedAt > best.startedAt) best = record;
+  }
+  return best;
+}
+
+function resolveStaticFile(staticDir, pathname) {
+  const root = path.resolve(staticDir);
+  let rel = pathname === "/" ? "index.html" : String(pathname || "");
+  rel = rel.replace(/^[/\\]+/, "");
+  rel = path.normalize(rel);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+  const filePath = path.resolve(root, rel);
+  if (filePath !== root && !filePath.startsWith(root + path.sep)) return null;
+  return filePath;
+}
+
 function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null }) {
   const activeRuns = new Map();
   let boundPort = port;
   let boundHost = host;
+  if (staticDir) staticDir = path.resolve(staticDir);
 
   const server = http.createServer(async (req, res) => {
     if (req.method === "OPTIONS") {
@@ -367,39 +534,11 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
         const cwd = body.cwd || process.cwd();
         const forcedId = newSession ? body.sessionId || createSessionId() : sessionId;
 
-        res.writeHead(200, {
-          "Content-Type": "text/event-stream; charset=utf-8",
-          "Cache-Control": "no-cache, no-transform",
-          Connection: "keep-alive",
-          "Access-Control-Allow-Origin": "*",
-          "X-Accel-Buffering": "no",
-          ...extraHeaders,
-        });
-
-        const writeEvent = (event, data) => {
-          res.write(`event: ${event}\n`);
-          res.write(`data: ${JSON.stringify(data)}\n\n`);
-        };
-
-        writeEvent("start", {
-          sessionId: forcedId,
-          newSession,
-          model,
-          effort,
-          cwd,
-          images: savedImages.length,
-        });
+        writeSseHeaders(res, extraHeaders);
 
         const runId = createSessionId();
-        writeEvent("run", { runId });
-        if (savedImages.length) {
-          writeEvent("status", {
-            message: `Saved ${savedImages.length} image(s) — launching Grok…`,
-          });
-        }
-
         // Attach listeners immediately; runPrompt buffers early events.
-        const run = runPrompt({
+        const emitter = runPrompt({
           prompt,
           sessionId: forcedId,
           cwd,
@@ -408,30 +547,80 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
           newSession,
           images: savedImages,
         });
-        activeRuns.set(runId, run);
-
-        run.on("status", (data) => writeEvent("status", data));
-        run.on("event", (evt) => writeEvent("grok", evt));
-        run.on("sessionId", (id) => writeEvent("session", { sessionId: id }));
-        run.on("error", (err) =>
-          writeEvent("error", { message: String(err.message || err) })
-        );
-        run.on("end", (info) => {
-          writeEvent("done", info);
-          activeRuns.delete(runId);
-          res.end();
+        const record = registerRun(activeRuns, {
+          runId,
+          sessionId: forcedId,
+          emitter,
         });
+        // Disconnect only detaches this HTTP client — the grok child keeps running.
+        attachSseClient(record, req, res);
 
-        req.on("close", () => {
-          if (activeRuns.has(runId)) {
-            try {
-              run.kill();
-            } catch {
-              /* ignore */
-            }
-            activeRuns.delete(runId);
+        broadcast(record, "start", {
+          sessionId: forcedId,
+          newSession,
+          model,
+          effort,
+          cwd,
+          images: savedImages.length,
+        });
+        broadcast(record, "run", { runId });
+        if (savedImages.length) {
+          broadcast(record, "status", {
+            message: `Saved ${savedImages.length} image(s) — launching Grok…`,
+          });
+        }
+        return;
+      }
+
+      if (pathname.startsWith("/api/chat/runs/") && req.method === "GET") {
+        const runId = decodeURIComponent(pathname.slice("/api/chat/runs/".length));
+        if (!runId || runId.includes("/")) {
+          sendJson(res, 404, { error: "Run not found" }, extraHeaders);
+          return;
+        }
+        const record = activeRuns.get(runId);
+        if (!record) {
+          sendJson(res, 404, { error: "Run not found" }, extraHeaders);
+          return;
+        }
+
+        writeSseHeaders(res, extraHeaders);
+        const ok = replayRecent(record, res);
+        if (!ok) return;
+        if (record.done) {
+          try {
+            if (!res.writableEnded && !res.destroyed) res.end();
+          } catch {
+            /* ignore */
           }
-        });
+          return;
+        }
+        attachSseClient(record, req, res);
+        return;
+      }
+
+      if (pathname === "/api/runs" && req.method === "GET") {
+        const sessionId = parsed.searchParams.get("sessionId") || "";
+        const record = findActiveRunBySessionId(activeRuns, sessionId);
+        if (!record) {
+          sendJson(res, 200, { run: null }, extraHeaders);
+          return;
+        }
+        sendJson(
+          res,
+          200,
+          {
+            run: {
+              runId: record.runId,
+              sessionId: record.sessionId,
+              startedAt: record.startedAt,
+            },
+            runId: record.runId,
+            sessionId: record.sessionId,
+            startedAt: record.startedAt,
+          },
+          extraHeaders
+        );
         return;
       }
 
@@ -442,10 +631,15 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
         } catch {
           /* empty */
         }
-        const run = activeRuns.get(body.runId);
-        if (run) {
-          run.kill();
-          activeRuns.delete(body.runId);
+        const record = activeRuns.get(body.runId);
+        if (record) {
+          if (!record.done) {
+            try {
+              record.emitter.kill();
+            } catch {
+              /* ignore */
+            }
+          }
           sendJson(res, 200, { ok: true }, extraHeaders);
         } else {
           sendJson(res, 404, { error: "Run not found" }, extraHeaders);
@@ -455,10 +649,8 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
 
       // ---------- Static UI ----------
       if (req.method === "GET" && staticDir) {
-        let rel = pathname === "/" ? "/index.html" : pathname;
-        rel = path.normalize(rel).replace(/^(\.\.[/\\])+/, "");
-        const filePath = path.join(staticDir, rel);
-        if (!filePath.startsWith(path.resolve(staticDir))) {
+        const filePath = resolveStaticFile(staticDir, pathname);
+        if (!filePath) {
           res.writeHead(403, extraHeaders);
           res.end("Forbidden");
           return;

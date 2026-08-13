@@ -17,6 +17,7 @@
   --tool-bg: #1f1f1f;
   --danger: #e07070;
   --ok: #6bcf8e;
+  --warn: #e0b050;
   --radius: 12px;
   --radius-sm: 8px;
   --sidebar-w: 280px;
@@ -26,6 +27,10 @@
 
 * {
   box-sizing: border-box;
+}
+
+.hidden {
+  display: none;
 }
 
 html, body {
@@ -497,6 +502,46 @@ body.select-mode .session-item .check {
   line-height: 1.35;
 }
 
+.session-item.live .title,
+.session-item.running .title {
+  position: relative;
+  padding-left: 14px;
+}
+
+.session-item.live .title::before,
+.session-item.running .title::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  margin-top: -3.5px;
+  border-radius: 50%;
+}
+
+.session-item.live .title::before {
+  background: var(--ok);
+  box-shadow: 0 0 0 0 rgba(107, 207, 142, 0.45);
+  animation: session-live-pulse 1.6s ease-in-out infinite;
+}
+
+.session-item.running .title::before {
+  background: var(--warn);
+  box-shadow: 0 0 0 0 rgba(224, 176, 80, 0.45);
+  animation: session-running-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes session-live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(107, 207, 142, 0.45); opacity: 1; }
+  50% { box-shadow: 0 0 0 4px rgba(107, 207, 142, 0); opacity: 0.7; }
+}
+
+@keyframes session-running-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(224, 176, 80, 0.45); opacity: 1; }
+  50% { box-shadow: 0 0 0 4px rgba(224, 176, 80, 0); opacity: 0.65; }
+}
+
 .session-item .sub {
   display: block;
   font-size: 11px;
@@ -672,6 +717,92 @@ body.select-mode .session-item .check {
   display: none;
 }
 
+/* ---------- Session banner (reconnect / resume status) ---------- */
+.session-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 20px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.session-banner.hidden {
+  display: none;
+}
+
+.session-banner.info {
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+}
+
+.session-banner.warn {
+  color: var(--warn);
+  background: rgba(224, 176, 80, 0.1);
+  border-bottom-color: rgba(224, 176, 80, 0.22);
+}
+
+.session-banner.ok {
+  color: var(--ok);
+  background: rgba(107, 207, 142, 0.1);
+  border-bottom-color: rgba(107, 207, 142, 0.22);
+}
+
+#session-banner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-banner-action {
+  appearance: none;
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 12px;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.session-banner-action:hover {
+  background: var(--bg-hover);
+}
+
+.session-banner-action.hidden {
+  display: none;
+}
+
+.session-banner-dismiss {
+  appearance: none;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.session-banner-dismiss:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
 /* ---------- Messages ---------- */
 .messages {
   flex: 1;
@@ -785,13 +916,23 @@ body.select-mode .session-item .check {
 .running-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   max-width: 760px;
   margin: 0 auto;
   padding: 0 28px 8px;
   width: 100%;
+  min-width: 0;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+#running-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .running-bar.hidden {
@@ -805,6 +946,7 @@ body.select-mode .session-item .check {
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
 }
 
 @keyframes spin {
@@ -813,6 +955,7 @@ body.select-mode .session-item .check {
 
 .btn-stop {
   margin-left: auto;
+  flex-shrink: 0;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1497,10 +1640,28 @@ body.select-mode .session-item .check {
     font-size: 20px;
   }
 
+  .session-banner {
+    padding: 6px 14px;
+    font-size: 12px;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  #session-banner-text {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    text-overflow: ellipsis;
+    overflow: hidden;
+  }
+
   .running-bar {
     max-width: none;
     padding: 0 14px 6px;
     flex-shrink: 0;
+    flex-wrap: wrap;
+    overflow: hidden;
   }
 
   .composer {

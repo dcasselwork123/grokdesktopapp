@@ -6,6 +6,11 @@ const os = require("os");
 const { spawn, execFile } = require("child_process");
 const { EventEmitter } = require("events");
 const { randomUUID } = require("crypto");
+const {
+  loadTranscript,
+  synthesizeSessionMeta,
+  looksLikeSessionDir,
+} = require("./sessionTranscript");
 
 function getGrokHome() {
   return process.env.GROK_HOME || path.join(os.homedir(), ".grok");
@@ -384,7 +389,7 @@ function groupProjectName(cwd) {
 /**
  * Scan ~/.grok/sessions for all sessions, grouped by project cwd.
  */
-function listSessions({ limit = 100 } = {}) {
+function listSessions({ limit = 100, includeOrphans = true } = {}) {
   const sessionsRoot = path.join(getGrokHome(), "sessions");
   if (!fs.existsSync(sessionsRoot)) return [];
 
@@ -421,33 +426,11 @@ function listSessions({ limit = 100 } = {}) {
 
     for (const sd of sessionDirs) {
       if (!sd.isDirectory()) continue;
-      const summaryPath = path.join(groupPath, sd.name, "summary.json");
-      if (!fs.existsSync(summaryPath)) continue;
-      const summary = safeReadJson(summaryPath);
-      if (!summary) continue;
-
-      const id = summary.info?.id || sd.name;
-      const title =
-        summary.manual_title ||
-        summary.generated_title ||
-        summary.session_summary ||
-        "Untitled session";
-      const updated =
-        summary.last_active_at || summary.updated_at || summary.created_at || null;
-      const created = summary.created_at || null;
-
-      results.push({
-        id,
-        title,
-        cwd: summary.info?.cwd || cwd,
-        project: groupProjectName(summary.info?.cwd || cwd),
-        createdAt: created,
-        updatedAt: updated,
-        model: summary.current_model_id || null,
-        effort: summary.reasoning_effort || null,
-        numMessages: summary.num_chat_messages ?? summary.num_messages ?? 0,
-        path: path.join(groupPath, sd.name),
-      });
+      const sessionPath = path.join(groupPath, sd.name);
+      const summary = safeReadJson(path.join(sessionPath, "summary.json"));
+      if (!summary && !includeOrphans) continue;
+      if (!summary && !looksLikeSessionDir(sd.name, sessionPath)) continue;
+      results.push(synthesizeSessionMeta(sessionPath, cwd));
     }
   }
 
@@ -461,109 +444,15 @@ function listSessions({ limit = 100 } = {}) {
 }
 
 /**
- * Reconstruct a readable chat transcript from updates.jsonl.
+ * Reconstruct a readable chat transcript from the session folder.
  */
 function loadSessionMessages(sessionId) {
-  const session = listSessions({ limit: 500 }).find((s) => s.id === sessionId);
-  if (!session) {
+  const sessionPath = findSessionPath(sessionId);
+  if (!sessionPath) {
     return { session: null, messages: [] };
   }
-
-  const updatesPath = path.join(session.path, "updates.jsonl");
-  const messages = [];
-  let currentUser = null;
-  let currentAssistant = null;
-  const tools = new Map(); // toolCallId -> tool entry
-
-  function flushUser() {
-    if (currentUser && currentUser.text.trim()) {
-      messages.push({
-        role: "user",
-        text: currentUser.text.trim(),
-        ts: currentUser.ts,
-      });
-    }
-    currentUser = null;
-  }
-
-  function flushAssistant() {
-    if (!currentAssistant) return;
-    const hasContent =
-      (currentAssistant.text && currentAssistant.text.trim()) ||
-      (currentAssistant.tools && currentAssistant.tools.length);
-    if (hasContent) {
-      messages.push({
-        role: "assistant",
-        text: (currentAssistant.text || "").trim(),
-        tools: currentAssistant.tools || [],
-        ts: currentAssistant.ts,
-      });
-    }
-    currentAssistant = null;
-  }
-
-  if (!fs.existsSync(updatesPath)) {
-    return { session, messages: [] };
-  }
-
-  let lines;
-  try {
-    lines = fs.readFileSync(updatesPath, "utf8").split(/\r?\n/).filter(Boolean);
-  } catch {
-    return { session, messages: [] };
-  }
-
-  for (const line of lines) {
-    let evt;
-    try {
-      evt = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const update = evt.params?.update || evt.update;
-    if (!update) continue;
-    const kind = update.sessionUpdate;
-    const ts = evt.timestamp || null;
-
-    if (kind === "user_message_chunk") {
-      flushAssistant();
-      const chunk = update.content?.text || "";
-      if (!currentUser) currentUser = { text: "", ts };
-      currentUser.text += chunk;
-    } else if (kind === "agent_message_chunk") {
-      flushUser();
-      const chunk = update.content?.text || "";
-      if (!currentAssistant) currentAssistant = { text: "", tools: [], ts };
-      currentAssistant.text += chunk;
-    } else if (kind === "agent_thought_chunk") {
-      // Skip thoughts in history view for cleaner chat
-      flushUser();
-      if (!currentAssistant) currentAssistant = { text: "", tools: [], ts };
-    } else if (kind === "tool_call") {
-      flushUser();
-      if (!currentAssistant) currentAssistant = { text: "", tools: [], ts };
-      const id = update.toolCallId;
-      const entry = {
-        id,
-        title: update.title || update._meta?.["x.ai/tool"]?.name || "tool",
-        status: "pending",
-        name: update._meta?.["x.ai/tool"]?.name || update.title || "tool",
-      };
-      tools.set(id, entry);
-      currentAssistant.tools.push(entry);
-    } else if (kind === "tool_call_update") {
-      const id = update.toolCallId;
-      const entry = tools.get(id);
-      if (entry) {
-        if (update.title) entry.title = update.title;
-        if (update.status) entry.status = update.status;
-      }
-    }
-  }
-
-  flushUser();
-  flushAssistant();
-
+  const session = synthesizeSessionMeta(sessionPath);
+  const { messages } = loadTranscript(sessionPath);
   return { session, messages };
 }
 
@@ -712,6 +601,57 @@ function debugLog(line) {
   }
 }
 
+function getDesktopTmpDir(...parts) {
+  const dir = path.join(os.homedir(), ".grok-desktop", ...parts);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** Write the prompt to disk so Windows spawn doesn't choke on long -p args. */
+function writeTempPromptFile(text) {
+  const filePath = path.join(getDesktopTmpDir("prompts"), `${randomUUID()}.txt`);
+  fs.writeFileSync(filePath, text == null ? "" : String(text), "utf8");
+  return filePath;
+}
+
+function cleanupTempFile(filePath) {
+  if (!filePath) return;
+  try {
+    fs.unlinkSync(filePath);
+  } catch {
+    /* already gone */
+  }
+}
+
+function createBufferedEmitter() {
+  const emitter = new EventEmitter();
+  const early = { event: [], sessionId: [], error: [], end: [], status: [] };
+  let piping = false;
+  const emitBuffered = (name, payload) => {
+    if (piping || emitter.listenerCount(name) > 0) {
+      piping = true;
+      for (const key of Object.keys(early)) {
+        if (early[key].length && emitter.listenerCount(key) > 0) {
+          for (const p of early[key].splice(0)) emitter.emit(key, p);
+        }
+      }
+      emitter.emit(name, payload);
+    } else {
+      early[name] = early[name] || [];
+      early[name].push(payload);
+    }
+  };
+  emitter.on("newListener", (name) => {
+    if (early[name] && early[name].length) {
+      process.nextTick(() => {
+        if (!early[name]) return;
+        for (const p of early[name].splice(0)) emitter.emit(name, p);
+      });
+    }
+  });
+  return { emitter, emitBuffered };
+}
+
 /** Patterns that mean the agent tried to kill the Grok process itself (Windows/Unix). */
 const SELF_KILL_RE =
   /taskkill\s+.*(?:\/im|\/IM)\s+grok(?:\.exe)?|Stop-Process\s+.*-Name\s+['"]?grok|killall\s+grok|pkill\s+.*grok|Get-Process\s+grok.*(?:Stop-Process|Kill)/i;
@@ -724,16 +664,35 @@ const NEW_SESSION_HINT =
  */
 function findSessionPath(sessionId) {
   if (!sessionId) return null;
-  const known = findSessionById(sessionId, { limit: 500 });
-  if (known?.path && fs.existsSync(known.path)) return known.path;
-
   const sessionsRoot = path.join(getGrokHome(), "sessions");
   if (!fs.existsSync(sessionsRoot)) return null;
   try {
-    for (const group of fs.readdirSync(sessionsRoot, { withFileTypes: true })) {
+    const groups = fs.readdirSync(sessionsRoot, { withFileTypes: true });
+    for (const group of groups) {
       if (!group.isDirectory()) continue;
       const candidate = path.join(sessionsRoot, group.name, sessionId);
-      if (fs.existsSync(candidate)) return candidate;
+      try {
+        if (fs.statSync(candidate).isDirectory()) return candidate;
+      } catch {
+        /* missing */
+      }
+    }
+    for (const group of groups) {
+      if (!group.isDirectory()) continue;
+      const groupPath = path.join(sessionsRoot, group.name);
+      let sessionDirs;
+      try {
+        sessionDirs = fs.readdirSync(groupPath, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const sd of sessionDirs) {
+        if (!sd.isDirectory()) continue;
+        const summary = safeReadJson(path.join(groupPath, sd.name, "summary.json"));
+        if (summary?.info?.id === sessionId) {
+          return path.join(groupPath, sd.name);
+        }
+      }
     }
   } catch {
     /* ignore */
@@ -859,15 +818,15 @@ function buildExitErrorMessage({
   if (killedByWatchdog) {
     if (isResume) {
       return (
-        `Grok produced no output for 45s after start while resuming this session. ` +
-        `${NEW_SESSION_HINT}` +
+        `Grok produced no output while resuming this session (waited ~2 minutes). ` +
+        `A fork was attempted if possible. ${NEW_SESSION_HINT}` +
         (hadImages
           ? " If you attached images, you can also retry without them to isolate the issue."
           : "")
       );
     }
     return (
-      `Grok produced no output for 45s after start.` +
+      `Grok produced no output after start.` +
       (hadImages
         ? " Try a new session, or send without the image to check the connection."
         : ` ${NEW_SESSION_HINT}`)
@@ -919,95 +878,23 @@ function runPrompt({
   newSession = false,
   images = [],
 }) {
-  const emitter = new EventEmitter();
-  // Buffer early events so HTTP layer can attach listeners first
-  const early = { event: [], sessionId: [], error: [], end: [], status: [] };
-  let piping = false;
-  const emitBuffered = (name, payload) => {
-    if (piping || emitter.listenerCount(name) > 0) {
-      piping = true;
-      for (const key of Object.keys(early)) {
-        if (early[key].length && emitter.listenerCount(key) > 0) {
-          for (const p of early[key].splice(0)) emitter.emit(key, p);
-        }
-      }
-      emitter.emit(name, payload);
-    } else {
-      early[name] = early[name] || [];
-      early[name].push(payload);
-    }
-  };
-  emitter.on("newListener", (name) => {
-    if (early[name] && early[name].length) {
-      process.nextTick(() => {
-        if (!early[name]) return;
-        for (const p of early[name].splice(0)) emitter.emit(name, p);
-      });
-    }
-  });
+  const { emitter, emitBuffered } = createBufferedEmitter();
+  refreshGrokBinary();
 
   const imageList = Array.isArray(images) ? images.filter(Boolean) : [];
-  const isResume = !!(sessionId && !newSession);
+  const requestedResume = !!(sessionId && !newSession);
   const effectivePrompt =
     imageList.length > 0 ? buildImagePrompt(prompt, imageList) : prompt || "";
 
-  // Stale locks from a previous hard kill can leave resume wedged
-  if (isResume && sessionId) {
+  // Stale *.lock files from a previous hard kill wedge `--resume` (no stdout, then death).
+  if (sessionId) {
     clearStaleSessionLocks(sessionId);
   }
 
-  const args = [
-    "-p",
-    effectivePrompt,
-    "-m",
-    model,
-    "--effort",
-    effort,
-    "--permission-mode",
-    "bypassPermissions",
-    "--output-format",
-    "streaming-json",
-    "--cwd",
-    cwd,
-  ];
+  const promptFile = writeTempPromptFile(effectivePrompt);
+  let debugFile = null;
 
-  if (sessionId && !newSession) {
-    args.push("--resume", sessionId);
-  } else if (newSession && sessionId) {
-    args.push("--session-id", sessionId);
-  }
-
-  debugLog(
-    `spawn images=${imageList.length} newSession=${newSession} resume=${isResume} ` +
-      `effort=${effort} cwd=${cwd} promptChars=${effectivePrompt.length} ` +
-      `imgPaths=${imageList.map((i) => (typeof i === "string" ? i : i.path)).join("|")}`
-  );
-
-  let child;
-  try {
-    child = spawn(GROK_BIN, args, {
-      cwd,
-      env: { ...process.env },
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } catch (err) {
-    debugLog(`spawn threw: ${err.message || err}`);
-    process.nextTick(() => {
-      emitBuffered("error", err);
-      emitBuffered("end", { ok: false, error: String(err) });
-    });
-    return emitter;
-  }
-
-  debugLog(`spawned pid=${child.pid}`);
-  emitBuffered("status", {
-    message: imageList.length
-      ? "Grok process started — opening image…"
-      : "Grok process started…",
-    pid: child.pid,
-  });
-
+  let child = null;
   let resolvedSessionId = sessionId || null;
   let buffer = "";
   let stderr = "";
@@ -1016,27 +903,138 @@ function runPrompt({
   let gotStdout = false;
   let firstEventAt = null;
   let sawToolsLive = false;
+  let sawEndEvent = false;
   let emittedError = false;
+  let finished = false;
+  let forkedOnce = false;
+  let userCancelled = false;
+  let currentIsResume = requestedResume;
+  let watchdogWarn = null;
+  let watchdogFail = null;
+  let hangAfterEnd = null;
 
-  // Watchdog: if Grok produces no stdout, surface that instead of silent hang
-  const watchdog = setTimeout(() => {
-    if (!gotStdout && !killed) {
-      debugLog(`watchdog: no stdout after 20s pid=${child.pid}`);
-      emitBuffered("status", {
-        message: isResume
-          ? "Still waiting for Grok to resume this session…"
-          : "Still waiting for Grok output… (this is taking longer than usual)",
-      });
+  const NO_STDOUT_WARN_MS = 20000;
+  // Resume of a crashed session can sit on locks / replay for well over 45s.
+  // Only kill (or fork) after a long silence with zero stdout.
+  const NO_STDOUT_FAIL_MS = requestedResume ? 120000 : 90000;
+  const HANG_AFTER_END_MS = 12000;
+
+  function clearWatchdogs() {
+    if (watchdogWarn) clearTimeout(watchdogWarn);
+    if (watchdogFail) clearTimeout(watchdogFail);
+    if (hangAfterEnd) clearTimeout(hangAfterEnd);
+    watchdogWarn = null;
+    watchdogFail = null;
+    hangAfterEnd = null;
+  }
+
+  function killChildTree(proc) {
+    if (!proc || !proc.pid) return;
+    debugLog(`kill pid=${proc.pid}`);
+    try {
+      if (process.platform === "win32") {
+        spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], {
+          windowsHide: true,
+          stdio: "ignore",
+        });
+      } else {
+        proc.kill("SIGTERM");
+      }
+    } catch {
+      try {
+        proc.kill();
+      } catch {
+        /* ignore */
+      }
     }
-  }, 20000);
+  }
 
-  const watchdogFail = setTimeout(() => {
-    if (!gotStdout && !killed) {
-      debugLog(`watchdog fail: killing pid=${child.pid} resume=${isResume}`);
+  function buildArgs({ resumeId, forkId, writeDebug }) {
+    const args = [
+      "--prompt-file",
+      promptFile,
+      "--verbatim",
+      "-m",
+      model,
+      "--effort",
+      effort,
+      "--permission-mode",
+      "bypassPermissions",
+      "--output-format",
+      "streaming-json",
+      "--cwd",
+      cwd,
+    ];
+    if (resumeId && forkId) {
+      args.push("--resume", resumeId, "--fork-session", "--session-id", forkId);
+    } else if (resumeId) {
+      args.push("--resume", resumeId);
+    } else if (forkId || (newSession && sessionId)) {
+      args.push("--session-id", forkId || sessionId);
+    }
+    if (writeDebug) {
+      debugFile = path.join(
+        getDesktopTmpDir("runs"),
+        `${Date.now()}-${String(resumeId || forkId || sessionId || "new").slice(0, 8)}.log`
+      );
+      args.push("--debug-file", debugFile);
+    }
+    return args;
+  }
+
+  function attachChild(proc, { isResume, isFork }) {
+    child = proc;
+    buffer = "";
+    gotStdout = false;
+    firstEventAt = null;
+    sawToolsLive = false;
+    sawEndEvent = false;
+    currentIsResume = isResume;
+
+    debugLog(`spawned pid=${proc.pid} resume=${isResume} fork=${isFork}`);
+    emitBuffered("status", {
+      message: isFork
+        ? "Previous session was stuck — continuing in a forked copy…"
+        : imageList.length
+          ? "Grok process started — opening image…"
+          : "Grok process started…",
+      pid: proc.pid,
+    });
+
+    clearWatchdogs();
+    watchdogWarn = setTimeout(() => {
+      if (!gotStdout && !killed && !finished) {
+        debugLog(`watchdog: no stdout after ${NO_STDOUT_WARN_MS}ms pid=${proc.pid}`);
+        emitBuffered("status", {
+          message: isResume
+            ? "Still waiting for Grok to resume this session…"
+            : "Still waiting for Grok output… (this is taking longer than usual)",
+        });
+      }
+    }, NO_STDOUT_WARN_MS);
+
+    watchdogFail = setTimeout(() => {
+      if (gotStdout || killed || finished) return;
+      debugLog(
+        `watchdog fail: no stdout pid=${proc.pid} resume=${isResume} forkedOnce=${forkedOnce}`
+      );
+
+      // First resume hang: fork into a new session so the user can keep going.
+      if (isResume && sessionId && !forkedOnce && !userCancelled) {
+        forkedOnce = true;
+        emitBuffered("status", {
+          message:
+            "This session isn’t resuming (often leftover locks after a crash). Forking a continuation…",
+        });
+        killed = true;
+        killChildTree(proc);
+        return;
+      }
+
       killedByWatchdog = true;
       const msg = buildExitErrorMessage({
         code: null,
-        stderr: "",
+        stderr,
         gotStdout: false,
         sawToolsLive: false,
         isResume,
@@ -1051,93 +1049,154 @@ function runPrompt({
       } catch {
         /* ignore */
       }
-    }
-  }, 45000);
+    }, isResume ? NO_STDOUT_FAIL_MS : NO_STDOUT_FAIL_MS);
 
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    if (!gotStdout) {
-      gotStdout = true;
-      firstEventAt = Date.now();
-      debugLog(`first stdout bytes=${chunk.length} pid=${child.pid}`);
-      emitBuffered("status", { message: "Grok is running…" });
-    }
-    buffer += chunk;
-    let idx;
-    while ((idx = buffer.indexOf("\n")) >= 0) {
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
-      if (!line) continue;
-      let evt;
-      try {
-        evt = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (evt.sessionId) resolvedSessionId = evt.sessionId;
-      if (evt.type === "end" && evt.sessionId) resolvedSessionId = evt.sessionId;
-      if (evt.session_id) resolvedSessionId = evt.session_id;
-      if (evt.type === "available_commands") {
+    proc.stdout.setEncoding("utf8");
+    proc.stdout.on("data", (chunk) => {
+      if (!gotStdout) {
+        gotStdout = true;
+        firstEventAt = Date.now();
+        debugLog(`first stdout bytes=${chunk.length} pid=${proc.pid}`);
         emitBuffered("status", { message: "Grok is running…" });
-      } else if (evt.type === "thought") {
-        emitBuffered("status", { message: "Thinking…" });
-      } else if (evt.type === "tool_call" || evt.type === "tool_call_update") {
-        sawToolsLive = true;
-        // Live stream may include command text; flag self-kill ASAP for messaging
-        const blob = JSON.stringify(evt);
-        if (SELF_KILL_RE.test(blob)) {
-          debugLog(
-            `detected self-kill pattern in live tool event session=${resolvedSessionId}`
-          );
+        if (watchdogFail) {
+          clearTimeout(watchdogFail);
+          watchdogFail = null;
         }
-        emitBuffered("status", {
-          message: evt.title || evt.toolName || "Using tools…",
-        });
-      } else if (evt.type === "text") {
-        emitBuffered("status", { message: "Writing…" });
       }
-      emitBuffered("event", evt);
-      if (resolvedSessionId) emitBuffered("sessionId", resolvedSessionId);
-    }
-  });
-
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk;
-  });
-
-  child.on("error", (err) => {
-    debugLog(`child error: ${err.message || err}`);
-    emitBuffered("error", err);
-  });
-
-  child.on("close", (code) => {
-    clearTimeout(watchdog);
-    clearTimeout(watchdogFail);
-    debugLog(
-      `close code=${code} gotStdout=${gotStdout} session=${resolvedSessionId} ` +
-        `stderrLen=${stderr.length} firstEventMs=${firstEventAt || "-"} ` +
-        `sawTools=${sawToolsLive} watchdog=${killedByWatchdog} killed=${killed}`
-    );
-    if (buffer.trim()) {
-      try {
-        const evt = JSON.parse(buffer.trim());
+      buffer += chunk;
+      let idx;
+      while ((idx = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (!line) continue;
+        let evt;
+        try {
+          evt = JSON.parse(line);
+        } catch {
+          continue;
+        }
         if (evt.sessionId) resolvedSessionId = evt.sessionId;
+        if (evt.type === "end" && evt.sessionId) resolvedSessionId = evt.sessionId;
+        if (evt.session_id) resolvedSessionId = evt.session_id;
+        if (evt.type === "available_commands") {
+          emitBuffered("status", { message: "Grok is running…" });
+        } else if (evt.type === "thought") {
+          emitBuffered("status", { message: "Thinking…" });
+        } else if (evt.type === "tool_call" || evt.type === "tool_call_update") {
+          sawToolsLive = true;
+          const blob = JSON.stringify(evt);
+          if (SELF_KILL_RE.test(blob)) {
+            debugLog(
+              `detected self-kill pattern in live tool event session=${resolvedSessionId}`
+            );
+          }
+          emitBuffered("status", {
+            message: evt.title || evt.toolName || "Using tools…",
+          });
+        } else if (evt.type === "text") {
+          emitBuffered("status", { message: "Writing…" });
+        } else if (evt.type === "end") {
+          sawEndEvent = true;
+          emitBuffered("status", { message: "Finishing turn…" });
+          // grok sometimes emits `end` then hangs (debug log: turn completed, process never exits).
+          if (!hangAfterEnd) {
+            hangAfterEnd = setTimeout(() => {
+              if (finished || killed) return;
+              debugLog(
+                `hang-after-end: killing pid=${proc.pid} session=${resolvedSessionId}`
+              );
+              killed = true;
+              killChildTree(proc);
+            }, HANG_AFTER_END_MS);
+          }
+        } else if (evt.type === "error" && evt.message) {
+          emitBuffered("status", { message: String(evt.message).slice(0, 160) });
+        }
         emitBuffered("event", evt);
-      } catch {
-        /* ignore trailing garbage */
+        if (resolvedSessionId) emitBuffered("sessionId", resolvedSessionId);
       }
-    }
+    });
 
-    // User/app cancel: don't double-error (watchdog already emitted)
-    const abnormal = code !== 0 && !killed;
+    proc.stderr.setEncoding("utf8");
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      if (stderr.length > 80_000) stderr = stderr.slice(-40_000);
+      const last = String(chunk).trim().split(/\r?\n/).filter(Boolean).pop();
+      if (last && !gotStdout) {
+        emitBuffered("status", {
+          message: last.length > 160 ? `${last.slice(0, 160)}…` : last,
+        });
+      }
+    });
+
+    proc.on("error", (err) => {
+      debugLog(`child error: ${err.message || err}`);
+      emitBuffered("error", err);
+    });
+
+    proc.on("close", (code) => {
+      if (child !== proc) return;
+      clearWatchdogs();
+      debugLog(
+        `close code=${code} gotStdout=${gotStdout} session=${resolvedSessionId} ` +
+          `stderrLen=${stderr.length} firstEventMs=${firstEventAt || "-"} ` +
+          `sawTools=${sawToolsLive} watchdog=${killedByWatchdog} killed=${killed} ` +
+          `forkedOnce=${forkedOnce} sawEnd=${sawEndEvent}`
+      );
+      if (buffer.trim()) {
+        try {
+          const evt = JSON.parse(buffer.trim());
+          if (evt.sessionId) resolvedSessionId = evt.sessionId;
+          emitBuffered("event", evt);
+        } catch {
+          /* ignore trailing garbage */
+        }
+      }
+
+      // Resume hung with no output: fork once instead of failing the turn.
+      if (
+        !gotStdout &&
+        currentIsResume &&
+        forkedOnce &&
+        !finished &&
+        sessionId &&
+        !killedByWatchdog &&
+        !userCancelled
+      ) {
+        const forkId = createSessionId();
+        debugLog(`fork-retry from session=${sessionId} -> ${forkId}`);
+        if (sessionId) clearStaleSessionLocks(sessionId);
+        killed = false;
+        startChild({
+          resumeId: sessionId,
+          forkId,
+          isResume: false,
+          isFork: true,
+          writeDebug: true,
+        });
+        emitBuffered("sessionId", forkId);
+        resolvedSessionId = forkId;
+        return;
+      }
+
+      finishRun(code);
+    });
+  }
+
+  function finishRun(code) {
+    if (finished) return;
+    finished = true;
+    clearWatchdogs();
+    cleanupTempFile(promptFile);
+
+    const abnormal = code !== 0 && !killed && !sawEndEvent;
     if (abnormal && !emittedError) {
       const msg = buildExitErrorMessage({
         code,
         stderr,
         gotStdout,
         sawToolsLive,
-        isResume,
+        isResume: currentIsResume,
         hadImages: imageList.length > 0,
         killedByWatchdog: false,
         sessionId: resolvedSessionId || sessionId,
@@ -1145,37 +1204,63 @@ function runPrompt({
       emitBuffered("error", new Error(msg));
     }
 
+    // `end` already wrote the session; a later hang-kill should not look like failure.
+    const ok = (code === 0 || sawEndEvent) && !killedByWatchdog;
     emitBuffered("end", {
-      ok: code === 0 && !killedByWatchdog,
+      ok,
       code,
       sessionId: resolvedSessionId,
       stderr: stderr.slice(-4000),
-      poisonedHint: abnormal || killedByWatchdog,
+      poisonedHint: (!ok && (abnormal || killedByWatchdog)) || false,
+      forked: forkedOnce && resolvedSessionId && resolvedSessionId !== sessionId,
     });
+  }
+
+  function startChild({ resumeId, forkId, isResume, isFork, writeDebug }) {
+    const args = buildArgs({ resumeId, forkId, writeDebug });
+    debugLog(
+      `spawn images=${imageList.length} newSession=${newSession} resume=${!!resumeId} ` +
+        `fork=${!!forkId} effort=${effort} cwd=${cwd} promptChars=${effectivePrompt.length} ` +
+        `imgPaths=${imageList.map((i) => (typeof i === "string" ? i : i.path)).join("|")}`
+    );
+    let proc;
+    try {
+      proc = spawn(GROK_BIN, args, {
+        cwd,
+        env: { ...process.env },
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      debugLog(`spawn threw: ${err.message || err}`);
+      if (!finished) {
+        cleanupTempFile(promptFile);
+        process.nextTick(() => {
+          emitBuffered("error", err);
+          emitBuffered("end", { ok: false, error: String(err) });
+        });
+        finished = true;
+      }
+      return;
+    }
+    attachChild(proc, { isResume, isFork });
+  }
+
+  startChild({
+    resumeId: requestedResume ? sessionId : null,
+    forkId: newSession && sessionId ? sessionId : null,
+    isResume: requestedResume,
+    isFork: false,
+    writeDebug: requestedResume,
   });
 
   emitter.kill = () => {
+    userCancelled = true;
     killed = true;
-    clearTimeout(watchdog);
-    clearTimeout(watchdogFail);
-    if (!child || !child.pid) return;
-    debugLog(`kill pid=${child.pid}`);
-    try {
-      if (process.platform === "win32") {
-        // Kill the whole tree — child.kill() often leaves grok.exe running on Windows
-        spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
-          windowsHide: true,
-          stdio: "ignore",
-        });
-      } else {
-        child.kill("SIGTERM");
-      }
-    } catch {
-      try {
-        child.kill();
-      } catch {
-        /* ignore */
-      }
+    clearWatchdogs();
+    killChildTree(child);
+    if (!child) {
+      finishRun(null);
     }
   };
 
@@ -1223,7 +1308,12 @@ function listSessionsCli({ limit = 50 } = {}) {
 
 function findSessionById(sessionId, { limit = 500 } = {}) {
   if (!sessionId) return null;
-  return listSessions({ limit }).find((s) => s.id === sessionId) || null;
+  const sessionPath = findSessionPath(sessionId);
+  if (sessionPath) return synthesizeSessionMeta(sessionPath);
+  return (
+    listSessions({ limit, includeOrphans: true }).find((s) => s.id === sessionId) ||
+    null
+  );
 }
 
 function getDesktopHome() {
