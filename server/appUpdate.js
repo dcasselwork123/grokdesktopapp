@@ -15,6 +15,8 @@ let cache = {
 };
 let applying = false;
 let applyPromise = null;
+/** Full SHA of HEAD when this process first inspected the repo. */
+let startedHead = null;
 
 function repoRoot() {
   return process.env.GROK_DESKTOP_REPO || REPO_ROOT;
@@ -258,6 +260,14 @@ async function inspectRepo({ fetchRemote }) {
 
   const current = await readCommit("HEAD");
   const latest = await readCommit(upstream);
+  if (!startedHead) {
+    try {
+      const { stdout } = await git(["rev-parse", "HEAD"]);
+      startedHead = stdout.trim() || current?.sha || null;
+    } catch {
+      startedHead = current?.sha || null;
+    }
+  }
   const { stdout: behindOut } = await git([
     "rev-list",
     "--count",
@@ -270,32 +280,51 @@ async function inspectRepo({ fetchRemote }) {
   ]);
   const behind = Number(behindOut.trim()) || 0;
   const ahead = Number(aheadOut.trim()) || 0;
+  let behindSinceStart = behind;
+  if (startedHead) {
+    try {
+      const { stdout } = await git([
+        "rev-list",
+        "--count",
+        `${startedHead}..${upstream}`,
+      ]);
+      behindSinceStart = Number(stdout.trim()) || 0;
+    } catch {
+      behindSinceStart = behind;
+    }
+  }
 
   let commits = [];
-  if (behind > 0) {
+  const logRange =
+    behindSinceStart > behind && startedHead
+      ? `${startedHead}..${upstream}`
+      : `HEAD..${upstream}`;
+  if (behindSinceStart > 0 || behind > 0) {
     const { stdout: logOut } = await git([
       "log",
       "--format=%h\t%s",
-      `HEAD..${upstream}`,
+      logRange,
     ]);
     commits = parseCommitLines(logOut);
   }
 
+  const diskBehind = behind > 0 && ahead === 0;
+  const launchedBehind = behindSinceStart > 0 && ahead === 0;
   return {
-    available: behind > 0 && ahead === 0,
+    available: diskBehind || launchedBehind,
     supported: true,
     applying,
     current,
     latest,
     commits,
     summary: formatUpdateSummary(commits),
-    behind,
+    behind: Math.max(behind, behindSinceStart),
     ahead,
     branch,
     upstream,
     checkedAt: Date.now(),
     nextCheckAt: Date.now() + FETCH_INTERVAL_MS,
-    error: ahead > 0 && behind > 0
+    error: ahead > 0 && (behind > 0 || behindSinceStart > 0)
       ? "Local branch has diverged from GitHub — update skipped."
       : ahead > 0
         ? "This checkout has local commits that are not on GitHub."
@@ -437,6 +466,7 @@ async function applyAppUpdate() {
 
 function resetUpdateCache() {
   cache = { fetchedAt: 0, snapshot: null, fetchPromise: null };
+  startedHead = null;
 }
 
 module.exports = {

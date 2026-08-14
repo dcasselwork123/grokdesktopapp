@@ -4332,12 +4332,12 @@
       return state.appUpdate;
     }
     try {
-      const info = await api("/api/update");
+      const info = await api(force ? "/api/update?refresh=1" : "/api/update");
       state.lastUpdateCheckAt = Date.now();
       renderUpdateButton(info);
       return info;
     } catch {
-      renderUpdateButton(null);
+      if (!force) renderUpdateButton(null);
       return null;
     }
   }
@@ -4362,9 +4362,52 @@
     els.updateProgress.textContent = text;
   }
 
-  function openUpdateModal() {
-    const info = state.appUpdate;
-    if (!info || !info.available || !els.updateBackdrop) return;
+  async function openUpdateModal() {
+    if (!els.updateBackdrop) {
+      els.updateBackdrop = document.getElementById("update-backdrop");
+    }
+    if (!els.updateCommit) els.updateCommit = document.getElementById("update-commit");
+    if (!els.updateTitle) els.updateTitle = document.getElementById("update-title");
+    if (!els.updateNote) els.updateNote = document.getElementById("update-note");
+    if (!els.updateConfirm) els.updateConfirm = document.getElementById("update-confirm");
+    if (!els.updateCancel) els.updateCancel = document.getElementById("update-cancel");
+    if (!els.updateBackdrop) return;
+
+    if (els.updateCommit) els.updateCommit.textContent = "Checking GitHub…";
+    if (els.updateTitle) els.updateTitle.textContent = "Update available";
+    if (els.updateNote) {
+      els.updateNote.textContent =
+        "This pulls the latest code, installs dependencies if needed, and restarts Grok Desktop.";
+    }
+    setUpdateProgress("");
+    state.updateApplying = false;
+    if (els.updateConfirm) {
+      els.updateConfirm.disabled = true;
+      els.updateConfirm.textContent = "Checking…";
+    }
+    if (els.updateCancel) els.updateCancel.disabled = false;
+    els.updateBackdrop.classList.remove("hidden");
+
+    const info = (await checkForAppUpdate({ force: true })) || state.appUpdate;
+    if (!info || !info.available) {
+      if (els.updateTitle) els.updateTitle.textContent = "You're up to date";
+      if (els.updateCommit) {
+        els.updateCommit.textContent =
+          (info && info.current && info.current.subject) ||
+          "No newer commit on GitHub.";
+      }
+      if (els.updateNote) {
+        els.updateNote.textContent =
+          info && info.error
+            ? info.error
+            : "This checkout already matches GitHub. If the app still looks old, quit and relaunch Grok Desktop.";
+      }
+      if (els.updateConfirm) {
+        els.updateConfirm.disabled = true;
+        els.updateConfirm.textContent = "Update and restart";
+      }
+      return;
+    }
     if (els.updateCommit) els.updateCommit.textContent = updateSummaryText(info);
     if (els.updateTitle) {
       els.updateTitle.textContent =
@@ -4375,14 +4418,11 @@
         ? "This pulls the latest code, installs dependencies if needed, and restarts Grok Desktop. The chat that is running now will stop."
         : "This pulls the latest code, installs dependencies if needed, and restarts Grok Desktop. In-progress chats will stop.";
     }
-    setUpdateProgress("");
-    state.updateApplying = false;
     if (els.updateConfirm) {
       els.updateConfirm.disabled = false;
       els.updateConfirm.textContent = "Update and restart";
     }
     if (els.updateCancel) els.updateCancel.disabled = false;
-    els.updateBackdrop.classList.remove("hidden");
   }
 
   function closeUpdateModal() {

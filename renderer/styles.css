@@ -648,6 +648,10 @@ body.select-mode .session-item .check {
   text-align: center;
 }
 
+.btn-update.hidden {
+  display: none;
+}
+
 .btn-update:hover,
 .btn-update:focus-visible {
   filter: brightness(1.08);
@@ -2139,7 +2143,7 @@ body.select-mode .session-item .check {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: 4000;
   padding: 20px;
 }
 
