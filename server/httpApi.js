@@ -141,7 +141,7 @@ function gatePageHtml() {
   .card{max-width:420px;background:#222;border:1px solid #333;border-radius:16px;padding:22px}
   h1{font-size:18px;margin:0 0 10px}
   p{margin:0 0 10px;color:#aaa;font-size:14px}
-  code{color:#9d00ff;word-break:break-all}
+  code{color:#9966CB;word-break:break-all}
 </style></head><body>
 <div class="card">
   <h1>Open the full phone URL</h1>

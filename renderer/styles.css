@@ -10,8 +10,8 @@
   --text: #e8e8e8;
   --text-muted: #9a9a9a;
   --text-dim: #6e6e6e;
-  --accent: #9d00ff;
-  --accent-soft: rgba(157, 0, 255, 0.16);
+  --accent: #9966CB;
+  --accent-soft: rgba(153, 102, 203, 0.16);
   --user-bubble: #2a2a2a;
   --assistant-text: #e8e8e8;
   --tool-bg: #1f1f1f;
@@ -429,7 +429,7 @@ a {
 }
 
 .session-item.selected:hover {
-  background: rgba(157, 0, 255, 0.24);
+  background: rgba(153, 102, 203, 0.24);
 }
 
 .session-item .radio {
@@ -1917,7 +1917,7 @@ body.select-mode .session-item .check {
 
 .folder-picker-item:hover,
 .folder-picker-item:focus-visible {
-  border-color: var(--accent, #9d00ff);
+  border-color: var(--accent, #9966CB);
   outline: none;
   background: var(--bg-hover, rgba(255, 255, 255, 0.04));
 }
