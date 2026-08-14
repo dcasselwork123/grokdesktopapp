@@ -2249,6 +2249,44 @@ body.select-mode .session-item .check {
   background: var(--bg-hover);
 }
 
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary:disabled:hover {
+  background: var(--bg);
+}
+
+.remote-lan-row {
+  margin: 12px 0 4px;
+}
+
+.remote-lan-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 13.5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.remote-lan-label input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.remote-lan-warn {
+  margin: 6px 0 0;
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
 /* ---------- Scrim when mobile drawer open ---------- */
 .sidebar-scrim {
   display: none;

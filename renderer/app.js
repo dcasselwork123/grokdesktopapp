@@ -147,6 +147,16 @@
     return window.matchMedia("(max-width: 800px)").matches;
   }
 
+  /** Phone / remote Safari — not a narrow Electron window on the PC. */
+  function isPhoneUi() {
+    return isMobileViewport() && !isElectron();
+  }
+
+  function isLoopbackPage() {
+    const host = String(location.hostname || "").toLowerCase();
+    return host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
+  }
+
   function persistLastSession(id) {
     try {
       if (id) localStorage.setItem(LAST_SESSION_KEY, id);
@@ -3607,31 +3617,90 @@
     });
   }
 
-  async function loadRemoteInfo() {
+  let lastRemoteInfo = null;
+  let remoteLanSaving = false;
+
+  function canShowLanToggle() {
+    return (isElectron() || isLoopbackPage()) && !isPhoneUi();
+  }
+
+  function remoteUrlIsCopyable(info) {
+    if (!info || info.canCopyPhoneUrl === false) return false;
+    const url = String(info.phoneUrl || "").trim();
+    if (!url || !/^https?:\/\//i.test(url)) return false;
+    if (/<your-tailscale-ip>|192\.168…|192\.168\.\.\./i.test(url)) return false;
+    return true;
+  }
+
+  function applyRemoteInfo(info) {
+    lastRemoteInfo = info || null;
     const urlEl = document.getElementById("remote-url");
     const noteEl = document.getElementById("remote-bind-note");
     const statusEl = document.getElementById("remote-status");
+    const copyBtn = document.getElementById("btn-copy-url");
+    const lanRow = document.getElementById("remote-lan-row");
+    const lanCheck = document.getElementById("remote-allow-lan");
+    const canCopy = remoteUrlIsCopyable(info);
+
+    if (urlEl) {
+      if (canCopy) {
+        urlEl.textContent = info.phoneUrl;
+      } else if (info && info.allowLan) {
+        urlEl.textContent =
+          "LAN is on — waiting for a reachable address. Stay on this trusted network, or connect Tailscale.";
+      } else {
+        urlEl.textContent =
+          "No phone URL. Connect Tailscale on this PC (required unless you enable Allow LAN), then reopen this dialog.";
+      }
+    }
+
+    if (copyBtn) {
+      copyBtn.disabled = !canCopy;
+      copyBtn.textContent = canCopy ? "Copy phone URL" : "No phone URL to copy";
+    }
+
+    if (noteEl) {
+      const parts = [];
+      if (info && info.bindNote) parts.push(info.bindNote);
+      if (info && info.tailscaleIp) {
+        parts.push(`This PC Tailscale IP: ${info.tailscaleIp}`);
+      } else if (info && !info.allowLan) {
+        parts.push("Tailscale IP not detected — open Tailscale on this PC.");
+      }
+      noteEl.textContent = parts.join(" ");
+    }
+
+    if (statusEl) {
+      if (info && info.tailscaleIp) {
+        statusEl.textContent =
+          "While this app is open, the phone can reach it over Tailscale (loopback + Tailscale).";
+      } else if (info && info.allowLan) {
+        statusEl.textContent =
+          "LAN access is on. Devices on this trusted network can reach the app — cafe/public Wi‑Fi can too.";
+      } else {
+        statusEl.textContent =
+          "Default access is this PC (loopback) plus Tailscale. Tailscale isn’t reporting an IP yet — connect it on this PC.";
+      }
+    }
+
+    if (lanRow) lanRow.classList.toggle("hidden", !canShowLanToggle());
+    if (lanCheck && !remoteLanSaving) lanCheck.checked = !!(info && info.allowLan);
+  }
+
+  async function loadRemoteInfo() {
+    const urlEl = document.getElementById("remote-url");
     try {
       const info = await api("/api/remote");
-      if (urlEl) urlEl.textContent = info.phoneUrl || "Unavailable";
-      if (noteEl) {
-        noteEl.textContent = [
-          info.bindNote,
-          info.tailscaleIp
-            ? `This PC Tailscale IP: ${info.tailscaleIp}`
-            : "Tailscale IP not detected — open Tailscale on this PC.",
-        ]
-          .filter(Boolean)
-          .join(" ");
-      }
-      if (statusEl) {
-        statusEl.textContent = info.tailscaleIp
-          ? "While this app is open, every session is reachable over Tailscale."
-          : "App is listening, but Tailscale isn’t reporting an IP yet — connect Tailscale on this PC.";
-      }
+      applyRemoteInfo(info);
       return info;
     } catch (err) {
+      lastRemoteInfo = null;
       if (urlEl) urlEl.textContent = `Could not load remote info: ${err.message}`;
+      const copyBtn = document.getElementById("btn-copy-url");
+      if (copyBtn) {
+        copyBtn.disabled = true;
+        copyBtn.textContent = "No phone URL to copy";
+      }
       return null;
     }
   }
@@ -3645,11 +3714,23 @@
   }
   if (els.btnAccountLoginX) {
     els.btnAccountLoginX.addEventListener("click", () => {
+      if (isPhoneUi()) {
+        if (els.accountPopHint) {
+          els.accountPopHint.textContent = "Start sign-in on the PC, then Recheck here.";
+        }
+        return;
+      }
       startSignIn({ method: "x" });
     });
   }
   if (els.btnAccountLoginEmail) {
     els.btnAccountLoginEmail.addEventListener("click", () => {
+      if (isPhoneUi()) {
+        if (els.accountPopHint) {
+          els.accountPopHint.textContent = "Start sign-in on the PC, then Recheck here.";
+        }
+        return;
+      }
       startSignIn({ method: "email" });
     });
   }
@@ -3698,17 +3779,39 @@
   const btnCopy = document.getElementById("btn-copy-url");
   if (btnCopy) {
     btnCopy.addEventListener("click", async () => {
-      const urlEl = document.getElementById("remote-url");
-      const text = urlEl?.textContent?.trim() || "";
-      if (!text || text.startsWith("Detecting") || text.startsWith("Could not")) return;
+      if (!remoteUrlIsCopyable(lastRemoteInfo)) return;
+      const text = String(lastRemoteInfo.phoneUrl || "").trim();
+      if (!text) return;
       try {
         await navigator.clipboard.writeText(text);
         btnCopy.textContent = "Copied!";
         setTimeout(() => {
-          btnCopy.textContent = "Copy phone URL";
+          btnCopy.textContent = remoteUrlIsCopyable(lastRemoteInfo)
+            ? "Copy phone URL"
+            : "No phone URL to copy";
         }, 1500);
       } catch {
         btnCopy.textContent = "Select the URL and copy manually";
+      }
+    });
+  }
+
+  const lanCheck = document.getElementById("remote-allow-lan");
+  if (lanCheck) {
+    lanCheck.addEventListener("change", async () => {
+      const next = !!lanCheck.checked;
+      const prev = !!(lastRemoteInfo && lastRemoteInfo.allowLan);
+      remoteLanSaving = true;
+      try {
+        const info = await api("/api/remote/settings", {
+          method: "POST",
+          body: JSON.stringify({ allowLan: next }),
+        });
+        applyRemoteInfo(info);
+      } catch {
+        lanCheck.checked = prev;
+      } finally {
+        remoteLanSaving = false;
       }
     });
   }
@@ -3763,6 +3866,13 @@
     els.accountPopover.setAttribute("aria-hidden", open ? "false" : "true");
     els.btnAccount.setAttribute("aria-expanded", open ? "true" : "false");
     if (els.accountPopHint && !open) els.accountPopHint.textContent = "";
+    if (open && isPhoneUi() && els.accountPopHint) {
+      const auth = (state.setup && state.setup.auth) || {};
+      const signedIn = !!(state.setup && (state.setup.ready || auth.valid));
+      els.accountPopHint.textContent = signedIn
+        ? "Switch accounts on the PC running Grok Desktop."
+        : "Finish sign-in on the PC running Grok Desktop, then Recheck here.";
+    }
   }
 
   function updateAccountUi(setup) {
@@ -3793,18 +3903,33 @@
         sep.classList.toggle("hidden", !signedIn);
       }
     }
+    const phoneLock = isPhoneUi();
     if (els.btnAccountLoginX) {
       els.btnAccountLoginX.textContent = signedIn ? "Switch to X account" : "Sign in with X";
+      els.btnAccountLoginX.disabled = phoneLock;
     }
     if (els.btnAccountLoginEmail) {
       els.btnAccountLoginEmail.textContent = signedIn
         ? "Switch to email account"
         : "Sign in with email";
+      els.btnAccountLoginEmail.disabled = phoneLock;
+    }
+    if (phoneLock && els.accountPopHint) {
+      els.accountPopHint.textContent = signedIn
+        ? "Switch accounts on the PC running Grok Desktop."
+        : "Finish sign-in on the PC running Grok Desktop, then Recheck here.";
     }
   }
 
   async function logoutAccount() {
     setAccountPopoverOpen(false);
+    if (isPhoneUi()) {
+      if (els.accountPopHint) {
+        els.accountPopHint.textContent = "Sign out on the PC running Grok Desktop.";
+      }
+      setAccountPopoverOpen(true);
+      return;
+    }
     if (state.running) {
       try {
         await api("/api/chat/cancel", {
@@ -3819,10 +3944,11 @@
     try {
       await api("/api/auth/logout", { method: "POST", body: "{}" });
     } catch (err) {
-      if (els.accountPopHint) {
-        els.accountPopHint.textContent = err.message || "Logout failed";
-      }
-      setStatus(false, err.message || "Logout failed");
+      const msg = isPhoneUi()
+        ? "Log out on the PC running Grok Desktop."
+        : err.message || "Logout failed";
+      if (els.accountPopHint) els.accountPopHint.textContent = msg;
+      setStatus(false, msg);
       setAccountPopoverOpen(true);
       return;
     }
@@ -4106,41 +4232,46 @@
         method === "email"
           ? "In the browser, choose Sign in with email and enter your Grok email and password."
           : "In the browser, choose Sign in with X (your X / Twitter account).";
+      const phone = isPhoneUi();
+      const runningActions = [
+        {
+          label: "Signing in…",
+          primary: true,
+          disabled: true,
+        },
+        {
+          label: "I’ve signed in — Recheck",
+          primary: false,
+          onClick: () => checkSetupAndBoot({ force: true }),
+        },
+      ];
+      if (!phone) {
+        runningActions.push({
+          label: "Cancel",
+          primary: false,
+          onClick: async () => {
+            try {
+              await api("/api/auth/login/cancel", { method: "POST", body: "{}" });
+            } catch {
+              /* ignore */
+            }
+            stopLoginPoll();
+            await checkSetupAndBoot({ force: true });
+          },
+        });
+      }
       setSetupChrome({
         title: method === "email" ? "Sign in with email" : "Sign in with X",
-        message:
-          "Complete sign-in in the browser window that opened on this computer. This screen will unlock automatically when auth is ready.",
+        message: phone
+          ? "Complete sign-in in the browser on the PC running Grok Desktop. This screen will unlock when auth is ready — or tap Recheck."
+          : "Complete sign-in in the browser window that opened on this computer. This screen will unlock automatically when auth is ready.",
         detailsHtml: `<div>${escapeHtml(emailHint)}</div><div style="margin-top:6px">${escapeHtml(
           methodHint
         )}</div>`,
-        hint: isMobileViewport()
+        hint: phone
           ? "You’re on a phone — finish sign-in on the PC running Grok Desktop."
           : "If no browser opened, run <code>grok login --oauth</code> in a terminal.",
-        actions: [
-          {
-            label: "Signing in…",
-            primary: true,
-            disabled: true,
-          },
-          {
-            label: "I’ve signed in — Recheck",
-            primary: false,
-            onClick: () => checkSetupAndBoot({ force: true }),
-          },
-          {
-            label: "Cancel",
-            primary: false,
-            onClick: async () => {
-              try {
-                await api("/api/auth/login/cancel", { method: "POST", body: "{}" });
-              } catch {
-                /* ignore */
-              }
-              stopLoginPoll();
-              await checkSetupAndBoot({ force: true });
-            },
-          },
-        ],
+        actions: runningActions,
       });
       setStatus(null, "Signing in…");
       if (!state.loginPollTimer) startLoginPoll();
@@ -4153,6 +4284,29 @@
       login.exitCode !== null &&
       !setup.auth?.valid;
 
+    if (isPhoneUi()) {
+      setSetupChrome({
+        title: "Sign in on the PC",
+        message:
+          "Finish sign-in on the PC running Grok Desktop, then tap Recheck. The phone cannot start Grok sign-in.",
+        detailsHtml: `<div>${escapeHtml(emailHint)}</div>${
+          failed && login.error
+            ? `<div style="margin-top:6px;color:var(--danger)">${escapeHtml(login.error)}</div>`
+            : ""
+        }`,
+        hint: "Use <strong>Sign in with X</strong> or <strong>Sign in with email</strong> in the desktop app. OAuth opens on the PC.",
+        actions: [
+          {
+            label: "Recheck",
+            primary: true,
+            onClick: () => checkSetupAndBoot({ force: true }),
+          },
+        ],
+      });
+      setStatus(false, "Sign in on the PC");
+      return;
+    }
+
     setSetupChrome({
       title: "Sign in to Grok",
       message: failed
@@ -4163,9 +4317,7 @@
           ? `<div style="margin-top:6px;color:var(--danger)">${escapeHtml(login.error)}</div>`
           : ""
       }`,
-      hint: isMobileViewport()
-        ? "Sign-in runs on the PC hosting this app; your phone only triggers it. Finish in the browser on the PC."
-        : "Opens the Grok sign-in page (<code>grok login --oauth</code>). Choose X or email there.",
+      hint: "Opens the Grok sign-in page (<code>grok login --oauth</code>). Choose X or email there.",
       actions: [
         {
           label: "Sign in with X",
@@ -4226,6 +4378,24 @@
     state.loginMethod = useEmail ? "email" : "x";
     setAccountPopoverOpen(false);
     const title = useEmail ? "Sign in with email" : "Sign in with X";
+    const phoneSignInHint = "Start sign-in on the PC, then Recheck here.";
+    if (isPhoneUi()) {
+      showSetupGate();
+      setSetupChrome({
+        title: "Sign in on the PC",
+        message: phoneSignInHint,
+        actions: [
+          {
+            label: "Recheck",
+            primary: true,
+            onClick: () => checkSetupAndBoot({ force: true }),
+          },
+        ],
+        hint: "The phone cannot start Grok sign-in. OAuth opens on the PC running Grok Desktop.",
+      });
+      setStatus(false, "Sign in on the PC");
+      return;
+    }
     const startingHint = useEmail
       ? "Starting sign-in… in the browser, choose Sign in with email."
       : "Starting sign-in… in the browser, choose Sign in with X.";
@@ -4261,9 +4431,27 @@
         await continueBootAfterSetup(setup);
       }
     } catch (err) {
+      const raw = String((err && err.message) || "");
+      const forbidden = /loopback|not allowed|only on the pc|LOOPBACK_ONLY|\b403\b/i.test(raw);
+      if (isPhoneUi() || forbidden) {
+        setSetupChrome({
+          title: "Sign in on the PC",
+          message: "Start sign-in on the PC, then Recheck here.",
+          hint: "The phone cannot start Grok sign-in. Use Sign in with X or email in the desktop app.",
+          actions: [
+            {
+              label: "Recheck",
+              primary: true,
+              onClick: () => checkSetupAndBoot({ force: true }),
+            },
+          ],
+        });
+        setStatus(false, "Sign in on the PC");
+        return;
+      }
       setSetupChrome({
         title,
-        message: err.message || "Could not start login.",
+        message: raw || "Could not start login.",
         hint: "You can also run <code>grok login --oauth</code> in a terminal, then Recheck. If this just updated, fully quit and relaunch Grok Desktop on the PC.",
         actions: [
           {
@@ -4499,6 +4687,17 @@
       els.updateTitle.textContent =
         info.behind > 1 ? `Update available (${info.behind} commits)` : "Update available";
     }
+    if (isPhoneUi()) {
+      if (els.updateNote) {
+        els.updateNote.textContent = "Update and restart on the PC, then reload Safari.";
+      }
+      if (els.updateConfirm) {
+        els.updateConfirm.disabled = true;
+        els.updateConfirm.textContent = "Update on the PC";
+      }
+      if (els.updateCancel) els.updateCancel.disabled = false;
+      return;
+    }
     if (els.updateNote) {
       els.updateNote.textContent = state.running
         ? "This pulls the latest code, installs dependencies if needed, and restarts Grok Desktop. The chat that is running now will stop."
@@ -4518,6 +4717,14 @@
 
   async function applyAppUpdateFromUi() {
     if (state.updateApplying) return;
+    if (isPhoneUi()) {
+      setUpdateProgress("Update and restart on the PC, then reload Safari.");
+      if (els.updateConfirm) {
+        els.updateConfirm.disabled = true;
+        els.updateConfirm.textContent = "Update on the PC";
+      }
+      return;
+    }
     state.updateApplying = true;
     if (els.updateConfirm) {
       els.updateConfirm.disabled = true;
@@ -4554,11 +4761,17 @@
         els.updateCancel.textContent = "Close";
       }
     } catch (err) {
-      setUpdateProgress(err.message || "Update failed.");
+      const raw = String((err && err.message) || "");
+      const forbidden = /loopback|not allowed|only on the pc|LOOPBACK_ONLY|\b403\b/i.test(raw);
+      setUpdateProgress(
+        forbidden || isPhoneUi()
+          ? "Update and restart on the PC, then reload Safari."
+          : raw || "Update failed."
+      );
       state.updateApplying = false;
       if (els.updateConfirm) {
-        els.updateConfirm.disabled = false;
-        els.updateConfirm.textContent = "Try again";
+        els.updateConfirm.disabled = forbidden || isPhoneUi();
+        els.updateConfirm.textContent = forbidden || isPhoneUi() ? "Update on the PC" : "Try again";
       }
       if (els.updateCancel) els.updateCancel.disabled = false;
     }

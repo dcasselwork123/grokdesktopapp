@@ -12,6 +12,7 @@ const {
   looksLikeSessionDir,
   writeDesktopTitle,
 } = require("./sessionTranscript");
+const { isSafeSessionId, resolveUnderSessionsRoot } = require("./sessionId");
 
 function getGrokHome() {
   return process.env.GROK_HOME || path.join(os.homedir(), ".grok");
@@ -721,14 +722,15 @@ const NEW_SESSION_HINT =
  * Locate a session directory under ~/.grok/sessions (any cwd group).
  */
 function findSessionPath(sessionId) {
-  if (!sessionId) return null;
+  if (!isSafeSessionId(sessionId)) return null;
   const sessionsRoot = path.join(getGrokHome(), "sessions");
   if (!fs.existsSync(sessionsRoot)) return null;
   try {
     const groups = fs.readdirSync(sessionsRoot, { withFileTypes: true });
     for (const group of groups) {
       if (!group.isDirectory()) continue;
-      const candidate = path.join(sessionsRoot, group.name, sessionId);
+      const candidate = resolveUnderSessionsRoot(sessionsRoot, group.name, sessionId);
+      if (!candidate) continue;
       try {
         if (fs.statSync(candidate).isDirectory()) return candidate;
       } catch {
@@ -737,7 +739,8 @@ function findSessionPath(sessionId) {
     }
     for (const group of groups) {
       if (!group.isDirectory()) continue;
-      const groupPath = path.join(sessionsRoot, group.name);
+      const groupPath = resolveUnderSessionsRoot(sessionsRoot, group.name);
+      if (!groupPath) continue;
       let sessionDirs;
       try {
         sessionDirs = fs.readdirSync(groupPath, { withFileTypes: true });
@@ -746,9 +749,11 @@ function findSessionPath(sessionId) {
       }
       for (const sd of sessionDirs) {
         if (!sd.isDirectory()) continue;
-        const summary = safeReadJson(path.join(groupPath, sd.name, "summary.json"));
+        const sessionDir = resolveUnderSessionsRoot(sessionsRoot, group.name, sd.name);
+        if (!sessionDir) continue;
+        const summary = safeReadJson(path.join(sessionDir, "summary.json"));
         if (summary?.info?.id === sessionId) {
-          return path.join(groupPath, sd.name);
+          return sessionDir;
         }
       }
     }

@@ -20,7 +20,18 @@ const {
   renameSession,
   getUsageSnapshot,
 } = require("./grokService");
-const { buildRemoteInfo } = require("./remoteAccess");
+const {
+  buildRemoteInfo,
+  normalizeRemoteAddress,
+  isLoopbackAddress,
+  isAllowedPeer,
+  getListenPlan,
+  resolveAccessSettings,
+  setAllowLan,
+  detectTailscaleIpSync,
+  getLanIpv4,
+} = require("./remoteAccess");
+const { isSafeSessionId } = require("./sessionId");
 const { getUpdateStatus, applyAppUpdate } = require("./appUpdate");
 
 const MIME = {
@@ -112,14 +123,70 @@ function serveStatic(res, filePath, extraHeaders = {}) {
   fs.createReadStream(filePath).pipe(res);
 }
 
-function isLoopback(req) {
-  const ra = req.socket?.remoteAddress || "";
+const PRIVILEGED_POST_PATHS = new Set([
+  "/api/update",
+  "/api/auth/login",
+  "/api/auth/login/cancel",
+  "/api/auth/logout",
+  "/api/remote/settings",
+]);
+
+const LOOPBACK_ONLY_BODY = {
+  error: "This action must be done on the PC (loopback only).",
+  code: "LOOPBACK_ONLY",
+};
+
+function isLoopbackRequest(req) {
+  return isLoopbackAddress(normalizeRemoteAddress(req.socket?.remoteAddress));
+}
+
+function isPrivilegedPost(method, pathname) {
   return (
-    ra === "127.0.0.1" ||
-    ra === "::1" ||
-    ra === "::ffff:127.0.0.1" ||
-    ra.endsWith("127.0.0.1")
+    String(method || "").toUpperCase() === "POST" &&
+    PRIVILEGED_POST_PATHS.has(pathname)
   );
+}
+
+function isRejectedSessionId(id) {
+  return !id || id === "bulk" || !isSafeSessionId(id);
+}
+
+function listenOn(server, port, host) {
+  return new Promise((resolve, reject) => {
+    const onError = (err) => {
+      server.off("listening", onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve(server.address());
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, host);
+  });
+}
+
+function closeHttpServer(server) {
+  return new Promise((resolve) => {
+    if (!server) return resolve();
+    if (!server.listening) {
+      try {
+        server.close();
+      } catch {
+        /* ignore */
+      }
+      return resolve();
+    }
+    server.close(() => resolve());
+    try {
+      if (typeof server.closeAllConnections === "function") {
+        server.closeAllConnections();
+      }
+    } catch {
+      /* ignore */
+    }
+  });
 }
 
 function wantsHtml(req, pathname) {
@@ -384,19 +451,191 @@ function resolveStaticFile(staticDir, pathname) {
   return filePath;
 }
 
-function createServer({
+// opts.host is ignored: stored/passed 0.0.0.0 is a migration trap. getListenPlan decides.
+async function createServer({
   port = 3847,
-  host = "127.0.0.1",
   staticDir,
   token = null,
   onAppRestart = null,
+  allowLan: allowLanOpt,
 } = {}) {
   const activeRuns = new Map();
-  let boundPort = port;
-  let boundHost = host;
   if (staticDir) staticDir = path.resolve(staticDir);
 
-  const server = http.createServer(async (req, res) => {
+  let boundPort = port;
+  let boundHost = "127.0.0.1";
+  let currentAllowLan =
+    typeof allowLanOpt === "boolean"
+      ? allowLanOpt
+      : !!resolveAccessSettings().allowLan;
+  let currentTailscaleIp = detectTailscaleIpSync() || null;
+  let loopbackServer = null;
+  let allInterfacesServer = null;
+  let tailscaleServer = null;
+  let tailscaleListenIp = null;
+  let remote = null;
+  const servers = [];
+  let rebindLock = Promise.resolve();
+
+  function refreshServers() {
+    servers.length = 0;
+    if (loopbackServer && loopbackServer.listening) servers.push(loopbackServer);
+    if (allInterfacesServer && allInterfacesServer.listening) {
+      servers.push(allInterfacesServer);
+    }
+    if (tailscaleServer && tailscaleServer.listening) servers.push(tailscaleServer);
+  }
+
+  function currentRemoteInfo() {
+    const plan = getListenPlan({
+      allowLan: currentAllowLan,
+      tailscaleIp: currentTailscaleIp,
+      envHost: process.env.GROK_DESKTOP_HOST,
+    });
+    boundHost = plan.allInterfaces ? "0.0.0.0" : "127.0.0.1";
+    return buildRemoteInfo({
+      port: boundPort,
+      token,
+      host: boundHost,
+      allowLan: currentAllowLan,
+      tailscaleIp: currentTailscaleIp,
+      lanIpv4:
+        currentAllowLan && typeof getLanIpv4 === "function" ? getLanIpv4() : null,
+    });
+  }
+
+  function attachConnectionFilter(srv) {
+    srv.on("connection", (socket) => {
+      const addr = socket.remoteAddress;
+      if (!isAllowedPeer(addr, { allowLan: currentAllowLan })) {
+        try {
+          socket.destroy();
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+  }
+
+  function makeHttpServer() {
+    const srv = http.createServer(handleRequest);
+    attachConnectionFilter(srv);
+    return srv;
+  }
+
+  async function tryListenExtra(listenHost, kind) {
+    const srv = makeHttpServer();
+    try {
+      await listenOn(srv, boundPort, listenHost);
+      return srv;
+    } catch (err) {
+      try {
+        srv.close();
+      } catch {
+        /* ignore */
+      }
+      const code = err && err.code;
+      if (kind === "all" && code === "EADDRINUSE") {
+        console.warn(
+          `[httpApi] 0.0.0.0:${boundPort} already in use — loopback stays up (Windows often cannot bind both).`
+        );
+      } else if (
+        kind === "tailscale" &&
+        (code === "EADDRNOTAVAIL" || code === "EADDRINUSE")
+      ) {
+        console.warn(
+          `[httpApi] Tailscale ${listenHost}:${boundPort} unavailable (${code}) — loopback stays up.`
+        );
+      } else {
+        console.warn(
+          `[httpApi] could not bind ${listenHost}:${boundPort}${code ? ` (${code})` : ""}:`,
+          err.message || err
+        );
+      }
+      return null;
+    }
+  }
+
+  async function rebindUnlocked(opts = {}) {
+    if (typeof opts.allowLan === "boolean") {
+      currentAllowLan = !!opts.allowLan;
+    } else {
+      currentAllowLan = !!resolveAccessSettings().allowLan;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(opts, "tailscaleIp")) {
+      currentTailscaleIp = opts.tailscaleIp || null;
+    } else {
+      currentTailscaleIp = detectTailscaleIpSync() || null;
+    }
+
+    const plan = getListenPlan({
+      allowLan: currentAllowLan,
+      tailscaleIp: currentTailscaleIp,
+      envHost: process.env.GROK_DESKTOP_HOST,
+    });
+
+    if (plan.allInterfaces) {
+      if (tailscaleServer) {
+        await closeHttpServer(tailscaleServer);
+        tailscaleServer = null;
+        tailscaleListenIp = null;
+      }
+      if (!allInterfacesServer) {
+        allInterfacesServer = await tryListenExtra("0.0.0.0", "all");
+      }
+    } else {
+      if (allInterfacesServer) {
+        await closeHttpServer(allInterfacesServer);
+        allInterfacesServer = null;
+      }
+      const wantTs = plan.tailscale || null;
+      if (!wantTs) {
+        if (tailscaleServer) {
+          await closeHttpServer(tailscaleServer);
+          tailscaleServer = null;
+          tailscaleListenIp = null;
+        }
+      } else if (!tailscaleServer || tailscaleListenIp !== wantTs) {
+        if (tailscaleServer) {
+          await closeHttpServer(tailscaleServer);
+          tailscaleServer = null;
+          tailscaleListenIp = null;
+        }
+        tailscaleServer = await tryListenExtra(wantTs, "tailscale");
+        tailscaleListenIp = tailscaleServer ? wantTs : null;
+      }
+    }
+
+    refreshServers();
+    remote = currentRemoteInfo();
+    return remote;
+  }
+
+  function rebind(opts) {
+    const run = rebindLock.then(() => rebindUnlocked(opts));
+    rebindLock = run.catch(() => {});
+    return run;
+  }
+
+  async function close() {
+    await rebindLock.catch(() => {});
+    if (allInterfacesServer) {
+      await closeHttpServer(allInterfacesServer);
+      allInterfacesServer = null;
+    }
+    if (tailscaleServer) {
+      await closeHttpServer(tailscaleServer);
+      tailscaleServer = null;
+      tailscaleListenIp = null;
+    }
+    if (loopbackServer) {
+      await closeHttpServer(loopbackServer);
+    }
+    refreshServers();
+  }
+
+  async function handleRequest(req, res) {
     if (req.method === "OPTIONS") {
       res.writeHead(204, {
         "Access-Control-Allow-Origin": "*",
@@ -426,7 +665,7 @@ function createServer({
     }
 
     const authorized =
-      !token || isLoopback(req) || presented === token;
+      !token || isLoopbackRequest(req) || presented === token;
 
     if (!authorized) {
       if (wantsHtml(req, pathname) && req.method === "GET") {
@@ -444,6 +683,11 @@ function createServer({
       return;
     }
 
+    if (isPrivilegedPost(req.method, pathname) && !isLoopbackRequest(req)) {
+      sendJson(res, 403, LOOPBACK_ONLY_BODY, extraHeaders);
+      return;
+    }
+
     try {
       if (pathname === "/api/health" && req.method === "GET") {
         sendJson(
@@ -452,7 +696,7 @@ function createServer({
           {
             ok: true,
             ...getStatus(),
-            remote: buildRemoteInfo({ port: boundPort, token, host: boundHost }),
+            remote: currentRemoteInfo(),
           },
           extraHeaders
         );
@@ -564,12 +808,20 @@ function createServer({
       }
 
       if (pathname === "/api/remote" && req.method === "GET") {
-        sendJson(
-          res,
-          200,
-          buildRemoteInfo({ port: boundPort, token, host: boundHost }),
-          extraHeaders
-        );
+        sendJson(res, 200, await rebind(), extraHeaders);
+        return;
+      }
+
+      if (pathname === "/api/remote/settings" && req.method === "POST") {
+        let body;
+        try {
+          body = await readBody(req);
+        } catch (err) {
+          sendJson(res, 400, { error: err.message || "Invalid JSON body" }, extraHeaders);
+          return;
+        }
+        setAllowLan(!!body.allowLan);
+        sendJson(res, 200, await rebind(), extraHeaders);
         return;
       }
 
@@ -606,6 +858,10 @@ function createServer({
 
       if (pathname === "/api/usage" && req.method === "GET") {
         const sessionId = parsed.searchParams.get("sessionId") || null;
+        if (sessionId && isRejectedSessionId(sessionId)) {
+          sendJson(res, 400, { error: "Invalid session id" }, extraHeaders);
+          return;
+        }
         try {
           const usage = await getUsageSnapshot({ sessionId });
           sendJson(res, 200, usage, extraHeaders);
@@ -622,7 +878,7 @@ function createServer({
 
       if (pathname.startsWith("/api/sessions/") && req.method === "GET") {
         const id = decodeURIComponent(pathname.slice("/api/sessions/".length));
-        if (!id || id.includes("/") || id === "bulk") {
+        if (isRejectedSessionId(id)) {
           sendJson(res, 400, { error: "Invalid session id" }, extraHeaders);
           return;
         }
@@ -640,7 +896,7 @@ function createServer({
 
       if (pathname.startsWith("/api/sessions/") && req.method === "PATCH") {
         const id = decodeURIComponent(pathname.slice("/api/sessions/".length));
-        if (!id || id.includes("/") || id === "bulk") {
+        if (isRejectedSessionId(id)) {
           sendJson(res, 400, { error: "Invalid session id" }, extraHeaders);
           return;
         }
@@ -706,6 +962,19 @@ function createServer({
         } catch (err) {
           sendJson(res, 400, { error: err.message || "Invalid image" }, extraHeaders);
           return;
+        }
+
+        if (body.sessionId != null && body.sessionId !== "") {
+          if (isRejectedSessionId(body.sessionId)) {
+            sendJson(res, 400, { error: "Invalid session id" }, extraHeaders);
+            return;
+          }
+        }
+        if (typeof body.forkFrom === "string" && body.forkFrom.trim()) {
+          if (isRejectedSessionId(body.forkFrom.trim())) {
+            sendJson(res, 400, { error: "Invalid session id" }, extraHeaders);
+            return;
+          }
         }
 
         const sessionId = body.sessionId || null;
@@ -788,6 +1057,10 @@ function createServer({
 
       if (pathname === "/api/runs" && req.method === "GET") {
         const sessionId = parsed.searchParams.get("sessionId") || "";
+        if (sessionId && isRejectedSessionId(sessionId)) {
+          sendJson(res, 400, { error: "Invalid session id" }, extraHeaders);
+          return;
+        }
         const clientTurnId = parsed.searchParams.get("clientTurnId") || "";
         const includeDone = parsed.searchParams.get("includeDone") === "1";
         if (clientTurnId) {
@@ -860,37 +1133,47 @@ function createServer({
         sendJson(res, 500, { error: String(err.message || err) }, extraHeaders);
       }
     }
+  }
+
+  loopbackServer = makeHttpServer();
+  try {
+    const addr = await listenOn(loopbackServer, port, "127.0.0.1");
+    boundPort = addr && addr.port ? addr.port : port;
+  } catch (err) {
+    await closeHttpServer(loopbackServer);
+    throw err;
+  }
+
+  await rebind({
+    allowLan: currentAllowLan,
+    tailscaleIp: currentTailscaleIp,
   });
 
-  return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, host, () => {
-      const addr = server.address();
-      boundPort = addr.port;
-      boundHost = addr.address;
-      const localHost =
-        addr.address === "0.0.0.0" || addr.address === "::"
-          ? "127.0.0.1"
-          : addr.address;
-      const remote = buildRemoteInfo({
-        port: boundPort,
-        token,
-        host: boundHost,
-      });
-      resolve({
-        server,
-        port: boundPort,
-        host: boundHost,
-        token,
-        url: `http://${localHost}:${boundPort}`,
-        remote,
-      });
-    });
-  });
+  return {
+    servers,
+    get server() {
+      return loopbackServer;
+    },
+    close,
+    get port() {
+      return boundPort;
+    },
+    get host() {
+      return boundHost;
+    },
+    url: `http://127.0.0.1:${boundPort}`,
+    get remote() {
+      return remote;
+    },
+    token,
+    rebind,
+  };
 }
 
 module.exports = {
   createServer,
   findRunBySessionId,
   findRunByClientTurnId,
+  isLoopbackRequest,
+  isPrivilegedPost,
 };

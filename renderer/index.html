@@ -264,8 +264,8 @@
     <div class="modal" role="dialog" aria-labelledby="modal-title">
       <h2 id="modal-title">Use from iPhone</h2>
       <div class="modal-body">
-        <p><strong>Nothing extra to install on the phone</strong> — you already have Tailscale. Use <em>Safari</em> (or Chrome).</p>
-        <p class="muted" id="remote-status">While this app is open, every session is reachable over Tailscale.</p>
+        <p><strong>Nothing extra to install on the phone</strong> — use Tailscale and <em>Safari</em> (or Chrome). Default access is this PC (loopback) plus Tailscale, not every network interface.</p>
+        <p class="muted" id="remote-status">While this app is open, the phone can reach it over Tailscale.</p>
         <p><strong>Open this URL on your iPhone:</strong></p>
         <pre id="remote-url">Detecting…</pre>
         <button type="button" id="btn-copy-url" class="btn-secondary">Copy phone URL</button>
@@ -275,8 +275,16 @@
           <li>Optional: Share → <strong>Add to Home Screen</strong> for a one-tap icon.</li>
         </ol>
         <p class="muted" id="remote-bind-note"></p>
+        <div id="remote-lan-row" class="remote-lan-row hidden">
+          <label class="remote-lan-label" for="remote-allow-lan">
+            <input type="checkbox" id="remote-allow-lan" />
+            <span>Allow LAN (trusted network)</span>
+          </label>
+          <p id="remote-lan-warn" class="remote-lan-warn">If this is on, cafe or public Wi‑Fi can reach this app. Only enable on a network you trust.</p>
+        </div>
         <hr />
-        <p class="muted">If it won’t connect: open the Tailscale app on this PC (status showed “stopped” before), allow Windows Firewall for Node/Electron on private networks, then reopen this dialog.</p>
+        <p class="muted">If it won’t connect: open Tailscale on this PC, allow Windows Firewall for Node/Electron on <strong>Private / Tailscale</strong> (not Public), then reopen this dialog.</p>
+        <p class="muted">The phone cannot apply in-app updates or start Grok sign-in. Do those on this PC, then reload Safari.</p>
       </div>
       <button id="modal-close" class="btn-primary">Got it</button>
     </div>

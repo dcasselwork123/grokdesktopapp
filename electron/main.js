@@ -11,8 +11,13 @@ let api = null;
 let access = null;
 let showedUncaughtDialog = false;
 let crashReloadPending = false;
+let rebindPollTimer = null;
+let lastFocusRebindAt = 0;
+let rebindBusy = false;
 const extraWindows = new Set();
 const sidechatPayloads = new Map();
+const REBIND_POLL_MS = 20_000;
+const REBIND_FOCUS_DEBOUNCE_MS = 2_000;
 
 function formatError(err) {
   return err && err.stack ? err.stack : String(err);
@@ -63,12 +68,47 @@ function restartDesktopApp() {
   app.exit(0);
 }
 
+async function rebindRemote(reason) {
+  if (!api || typeof api.rebind !== "function") return;
+  if (rebindBusy) return;
+  rebindBusy = true;
+  try {
+    const remote = await api.rebind();
+    if (remote) api.remote = remote;
+  } catch (err) {
+    console.warn(
+      `[Grok Desktop] Tailscale rebind failed (${reason}):`,
+      err && err.message ? err.message : err
+    );
+  } finally {
+    rebindBusy = false;
+  }
+}
+
+function startRebindPoll() {
+  if (rebindPollTimer) return;
+  if (!api || typeof api.rebind !== "function") return;
+  rebindPollTimer = setInterval(() => {
+    rebindRemote("poll");
+  }, REBIND_POLL_MS);
+  if (typeof rebindPollTimer.unref === "function") rebindPollTimer.unref();
+}
+
+function rebindOnWindowFocus() {
+  if (!api || typeof api.rebind !== "function") return;
+  const now = Date.now();
+  if (now - lastFocusRebindAt < REBIND_FOCUS_DEBOUNCE_MS) return;
+  lastFocusRebindAt = now;
+  rebindRemote("focus");
+}
+
 async function startApi() {
   if (api) return api;
   access = resolveAccessSettings();
   const staticDir = path.join(__dirname, "..", "renderer");
+  const allowLan = !!access.allowLan;
 
-  // Prefer configured port; if busy, try the next few so launch still works.
+  // Loopback listen first (port retries). Tailscale / LAN sockets come from rebind.
   const portsToTry = [access.port, access.port + 1, access.port + 2, 0];
   let lastErr = null;
 
@@ -81,10 +121,11 @@ async function startApi() {
       }
       api = await createServer({
         port,
-        host: access.host, // default 0.0.0.0 → Tailscale-reachable
         staticDir,
         token: access.token,
         onAppRestart: restartDesktopApp,
+        allowLan,
+        host: access.host, // back-compat; new createServer ignores stored 0.0.0.0 unless allowLan
       });
       console.log(`[Grok Desktop] Local UI:  ${api.url}`);
       if (api.port !== access.port) {
@@ -97,11 +138,15 @@ async function startApi() {
       }
       if (api.remote?.tailscaleIp) {
         console.log(`[Grok Desktop] Tailscale: ${api.remote.tailscaleIp}`);
-      } else {
+      }
+      if (!api.remote?.phoneUrl) {
         console.log(
-          "[Grok Desktop] Tailscale IP not detected — open Tailscale on this PC, then tap 📱 in the app."
+          allowLan
+            ? "[Grok Desktop] Phone URL unavailable — no Tailscale or LAN address detected."
+            : "[Grok Desktop] Phone URL unavailable — Tailscale is required for remote access."
         );
       }
+      startRebindPoll();
       return api;
     } catch (err) {
       lastErr = err;
@@ -413,6 +458,10 @@ if (gotTheLock) {
         focusMainWindow();
       }
     });
+  });
+
+  app.on("browser-window-focus", () => {
+    rebindOnWindowFocus();
   });
 
   app.on("window-all-closed", () => {

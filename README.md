@@ -75,13 +75,15 @@ Keep Grok Desktop running on the PC. On the PC, click **📱** in the sidebar fo
 1. Install [Tailscale](https://tailscale.com/download) on the PC and iPhone; sign into the same account.
 2. On the phone, open the copied URL in Safari (`http://100.x.y.z:3847/?token=…`).
 
-The app already binds to `0.0.0.0:3847` and stores a random token in `~/.grok-desktop/config.json`. You do not need to set env vars for the usual case.
+Default bind is **loopback + Tailscale** (`127.0.0.1` and the PC’s `100.x` address), not all interfaces. A random token is stored in `~/.grok-desktop/config.json`. You do not need to set env vars for the usual case.
 
 Loopback (`127.0.0.1`) does not need a token. Anything remote does — after the first `?token=` load, a cookie keeps CSS/JS working.
 
-If you sign in from the phone, the OAuth browser still opens **on the PC**. Finish login there.
+The phone **cannot** apply in-app updates or start Grok sign-in (OAuth). Do those on the PC, then reload Safari (or tap Recheck on the setup gate).
 
-**LAN only (no Tailscale):** same URL with your PC’s LAN IP. Only do this on a trusted network.
+**LAN (opt-in):** 📱 **Allow LAN (trusted network)**, or set `GROK_DESKTOP_ALLOW_LAN=1` / `GROK_DESKTOP_HOST=0.0.0.0`. Only do this on a network you trust — cafe/public Wi‑Fi can then reach the app.
+
+Windows Firewall: allow **Private / Tailscale**, not Public.
 
 ## Environment variables (optional)
 
@@ -90,7 +92,8 @@ Defaults live in `~/.grok-desktop/config.json`. Env vars override the file.
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `GROK_DESKTOP_PORT` | `3847` | HTTP port |
-| `GROK_DESKTOP_HOST` | `0.0.0.0` | Bind address |
+| `GROK_DESKTOP_HOST` | loopback + Tailscale | Bind address. Set `0.0.0.0` only to force all-interfaces (same as Allow LAN) |
+| `GROK_DESKTOP_ALLOW_LAN` | off | `1` / `true` listens on the LAN as well (cafe/public Wi‑Fi can then reach the app) |
 | `GROK_DESKTOP_TOKEN` | auto-generated | Required as `?token=` or `X-Grok-Token` for non-loopback |
 | `GROK_BIN` | auto | Path to `grok` / `grok.exe` |
 | `GROK_HOME` | `~/.grok` | Grok config/sessions root |
@@ -143,8 +146,8 @@ Confirm you’re signed in (account bubble in the sidebar). In a terminal: `grok
 **Phone can’t connect**
 - App must be running on the PC
 - Use the **📱 Copy phone URL** link (includes `?token=`)
-- Use the Tailscale IP, not `127.0.0.1`, on the phone
-- Windows Firewall may prompt on first bind — allow private/Tailscale
+- Use the Tailscale IP, not `127.0.0.1`, on the phone (or a LAN IP only if you enabled **Allow LAN**)
+- Windows Firewall may prompt on first bind — allow **Private / Tailscale**, not Public
 
 **Sessions missing**  
 They live under `%USERPROFILE%\.grok\sessions`. The app lists folders that have a `summary.json`.

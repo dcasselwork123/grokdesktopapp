@@ -87,7 +87,7 @@ If this folder is a git checkout of the app, the sidebar footer can show **Updat
 | **Confirm** | Button opens a modal with the incoming commit subject(s) |
 | **Apply** | `POST /api/update` — `git pull --ff-only`, `npm install` only if `package.json` / lockfile changed, then Electron `app.relaunch()` |
 | **Hidden when** | Not a git checkout, git missing, already current, or local branch has diverged / is ahead |
-| **Phone** | Same button; pull/restart run on the **PC**. Reload Safari after the desktop window comes back |
+| **Phone** | Can see **Update available** (`GET`). Apply (`POST /api/update`) is PC-only — update and restart on the desktop, then reload Safari |
 
 Do not force-push, reset, or stash local work. If the fast-forward is blocked, show git’s error.
 
@@ -96,6 +96,8 @@ Server: `server/appUpdate.js`. Restart hook: `electron/main.js` → `onAppRestar
 ### Remote (phone)
 
 - Same `renderer/` as desktop. Auth: loopback open; remote needs `?token=` (cookie for CSS/JS).
+- Default bind is `127.0.0.1` plus the Tailscale `100.x` address — **not** `0.0.0.0`. LAN is opt-in via 📱 **Allow LAN (trusted network)** (or `GROK_DESKTOP_ALLOW_LAN=1` / `GROK_DESKTOP_HOST=0.0.0.0`).
+- Phone cannot `POST /api/update` or start/cancel OAuth (`POST /api/auth/login`). Finish sign-in and apply updates on the PC, then reload Safari / Recheck.
 - Mobile: model/effort in composer; folder via **New → project picker**; images via phone file picker / photos.
 
 ### Startup setup gate (CLI install + Grok sign-in)
@@ -124,7 +126,7 @@ Server: `server/appUpdate.js`. Restart hook: `electron/main.js` → `onAppRestar
 | UI | Shows “complete sign-in in the browser…”, polls **`GET /api/setup`** every ~1.5s |
 | Success | `auth.json` becomes valid → gate hides → app unlocks |
 | Cancel | `POST /api/auth/login/cancel` kills the login process |
-| Phone / remote | Button still works (runs on the **PC** hosting the server); OAuth browser opens on the host machine — tell the user to finish login on the PC |
+| Phone / remote | Cannot start OAuth (`POST /api/auth/login` is loopback-only). Finish sign-in on the PC, then Recheck (`GET /api/setup`) on the phone |
 
 Related endpoints:
 
@@ -165,7 +167,7 @@ npm.cmd run server       # node server/index.js → http://127.0.0.1:3847
 
 **Requirements:** Node 18+. Grok CLI + sign-in are checked at startup (see **Startup setup gate** above). Fresh clones: user installs CLI and/or clicks **Sign in with Grok** — no shared account secrets in the repo.
 
-**Config / remote:** `~/.grok-desktop/config.json` (token, host, port). Default bind is `0.0.0.0:3847` so Tailscale can reach the UI. Phone URL = PC Tailscale IP + port + `?token=…` (📱 in the desktop UI copies it). Auth: loopback open; remote needs token (cookie set after first `?token=` load so CSS/JS work).
+**Config / remote:** `~/.grok-desktop/config.json` (token, host, port, `allowLan`). Default bind is `127.0.0.1` + Tailscale `100.x` (not `0.0.0.0`). Phone URL = PC Tailscale IP + port + `?token=…` (📱 copies it when Tailscale is up; no LAN fallback unless Allow LAN is on). Auth: loopback open; remote needs token (cookie set after first `?token=` load so CSS/JS work).
 
 **Local data (user machine, not in repo):**
 
@@ -173,7 +175,7 @@ npm.cmd run server       # node server/index.js → http://127.0.0.1:3847
 |------|---------|
 | `~/.grok/sessions/` | Real Grok session store (shared with CLI) |
 | `~/.grok/auth.json` | Grok OAuth / account credentials (**never commit**; each user signs in locally) |
-| `~/.grok-desktop/config.json` | Desktop bind host/port/token |
+| `~/.grok-desktop/config.json` | Desktop bind host/port/token/`allowLan` |
 | `~/.grok-desktop/uploads/` | Attached images saved for the current machine |
 | `~/.grok-desktop/debug.log` | Optional spawn/stream debug lines |
 
