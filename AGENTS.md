@@ -185,6 +185,7 @@ npm.cmd run server       # node server/index.js → http://127.0.0.1:3847
 GrokDesktop/
 ├── AGENTS.md               ← this file (read first for app work)
 ├── package.json            ← electron app entry: electron/main.js
+├── package-lock.json       ← leave in repo; do not touch or nag about it
 ├── Start Grok Desktop.vbs  ← double-click launcher (no console)
 ├── Start Grok Desktop.bat  ← double-click launcher (errors visible)
 ├── README.md               ← longer human docs (remote, env vars)
@@ -251,5 +252,6 @@ UI (Electron or Safari)
 7. **Folder change = new chat** when cwd differs from the active session — don’t silently resume the old session in a new directory.
 8. **Keep the setup gate** (install CLI / Sign in with Grok). Don’t reintroduce silent CLI/auth failures for fresh clones.
 9. **Main repo** is https://github.com/dcasselwork123/grokdesktopapp — push decent-sized work to `origin/main`; **ask before pushing small changes.** Never force-push.
+10. **`package-lock.json`:** leave it in the repo and **leave it alone**. Do not delete it, restore it, “clean up” uuid/deps noise, or flag local lockfile diffs to the user unless they explicitly asked.
 
 )
