@@ -182,7 +182,6 @@ GrokDesktop/
 ├── Start Grok Desktop.vbs  ← double-click launcher (no console)
 ├── Start Grok Desktop.bat  ← double-click launcher (errors visible)
 ├── README.md               ← longer human docs (remote, env vars)
-├── claudedesktopoutline.png
 ├── screenshots/            ← e.g. mobileview.png
 │
 ├── electron/
