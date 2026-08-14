@@ -15,7 +15,14 @@ Do not re-scaffold the app from scratch. Do not assume npm-only workflows when t
 
 That GitHub repo is the **main repo** for this project. Treat it as the only remote source of truth unless the user says otherwise.
 
-**Push policy:** Do **not** `git push`, force-push, open PRs, or otherwise publish to GitHub unless the user **explicitly** asks you to (e.g. “push this”, “push to GitHub”). Local commits are fine when the user asks to commit; remote publish always needs explicit approval.
+**Push policy:** After a **decent-sized** change, commit (if needed) and `git push` to `origin/main` without waiting to be asked. After a **small** change, commit locally if that makes sense, then **ask** before pushing.
+
+| Push now | Ask first |
+|----------|-----------|
+| New feature, user-visible behavior change, or multi-file bugfix | Typos, copy tweaks, one-liner / few-line fixes, docs-only (`AGENTS.md`, `README.md`), or “not sure this is done” |
+| The user said “push this” / “push to GitHub” | Anything that rewrites history (`--force`), opens a PR, or publishes to a non-`main` remote |
+
+Never force-push. Never commit secrets (`~/.grok/auth.json`, API keys, `~/.grok-desktop/config.json`). If push is blocked (auth, conflicts), say so and stop.
 
 ---
 
@@ -219,6 +226,6 @@ UI (Electron or Safari)
 6. **Images:** save to disk + pass paths via `-p` (vision through tools). Avoid large `--prompt-json` base64 on Windows/Electron.
 7. **Folder change = new chat** when cwd differs from the active session — don’t silently resume the old session in a new directory.
 8. **Keep the setup gate** (install CLI / Sign in with Grok). Don’t reintroduce silent CLI/auth failures for fresh clones.
-9. **Main repo** is https://github.com/dcasselwork123/grokdesktopapp — **only push when the user explicitly approves.**
+9. **Main repo** is https://github.com/dcasselwork123/grokdesktopapp — push decent-sized work to `origin/main`; **ask before pushing small changes.** Never force-push.
 
 )
