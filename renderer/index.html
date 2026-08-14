@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'self'; form-action 'self'" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
   <meta name="color-scheme" content="dark" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -134,6 +135,10 @@
       </div>
 
       <footer class="composer">
+        <div id="folder-trust" class="folder-trust hidden" role="status">
+          <span id="folder-trust-text">Grok can read and run commands in this folder.</span>
+          <button type="button" id="folder-trust-dismiss" class="folder-trust-dismiss">Got it</button>
+        </div>
         <div id="attach-strip" class="attach-strip hidden" aria-label="Attached images"></div>
         <div id="queue-strip" class="queue-strip hidden" aria-label="Queued follow-ups"></div>
         <div class="composer-box">
@@ -197,6 +202,28 @@
                 <span id="effort-value" class="effort-value">High</span>
               </div>
             </label>
+            <div
+              class="selector model-selector access-selector"
+              id="access-selector"
+              title="Full access lets Grok run tools in this folder without asking. Safer denies tools in this headless UI."
+            >
+              <span class="sel-label">Access</span>
+              <button
+                type="button"
+                id="access-select-btn"
+                class="model-select-btn"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+                aria-controls="access-menu"
+                title="Full access lets Grok run tools in this folder without asking. Safer denies tools in this headless UI."
+              >
+                <span id="access-select-label" class="model-select-label">Full access</span>
+                <svg class="model-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </button>
+              <div id="access-menu" class="model-menu hidden" role="listbox" aria-labelledby="access-select-btn"></div>
+            </div>
             <label class="selector cwd-selector">
               <span class="sel-label">Folder</span>
               <div class="cwd-control">

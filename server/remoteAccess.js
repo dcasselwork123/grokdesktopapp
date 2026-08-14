@@ -58,6 +58,65 @@ function setLastCwd(cwd) {
   return next;
 }
 
+/** Compare resolved paths; win32 is case-insensitive. Does not read or write config. */
+function folderInSeenList(cwd, list) {
+  const resolved = normalizeStoredCwd(cwd);
+  if (resolved == null || !Array.isArray(list)) return false;
+  const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  for (const item of list) {
+    const other = normalizeStoredCwd(item);
+    if (other == null) continue;
+    const otherKey = process.platform === "win32" ? other.toLowerCase() : other;
+    if (key === otherKey) return true;
+  }
+  return false;
+}
+
+function getSeenFolders() {
+  const stored = loadConfig();
+  if (!Array.isArray(stored.seenFolders)) return [];
+  const out = [];
+  for (const item of stored.seenFolders) {
+    const resolved = normalizeStoredCwd(item);
+    if (resolved == null) continue;
+    if (!folderInSeenList(resolved, out)) out.push(resolved);
+  }
+  return out;
+}
+
+function addSeenFolder(cwd) {
+  const next = normalizeStoredCwd(cwd);
+  const list = getSeenFolders();
+  if (next == null) return list;
+  if (!folderInSeenList(next, list)) list.push(next);
+  const stored = loadConfig();
+  stored.seenFolders = list;
+  saveConfig(stored);
+  return list;
+}
+
+function isSeenFolder(cwd) {
+  return folderInSeenList(cwd, getSeenFolders());
+}
+
+const STORED_PERMISSION_MODES = ["bypassPermissions", "dontAsk", "default"];
+const STORED_PERMISSION_DEFAULT = "bypassPermissions";
+
+function getPermissionMode() {
+  const stored = loadConfig();
+  const mode = stored.permissionMode;
+  if (STORED_PERMISSION_MODES.includes(mode)) return mode;
+  return STORED_PERMISSION_DEFAULT;
+}
+
+function setPermissionMode(mode) {
+  if (!STORED_PERMISSION_MODES.includes(mode)) return getPermissionMode();
+  const stored = loadConfig();
+  stored.permissionMode = mode;
+  saveConfig(stored);
+  return mode;
+}
+
 function isAllInterfacesHost(host) {
   return host === "0.0.0.0" || host === "::";
 }
@@ -520,4 +579,10 @@ module.exports = {
   getLastCwd,
   setLastCwd,
   normalizeStoredCwd,
+  folderInSeenList,
+  getSeenFolders,
+  addSeenFolder,
+  isSeenFolder,
+  getPermissionMode,
+  setPermissionMode,
 };

@@ -64,6 +64,8 @@ Then open http://127.0.0.1:3847. The setup gate is the same.
 | **Model / Effort** | Composer selectors, including a custom model picker |
 | **Usage** | Weekly usage pie in the composer; click for session context |
 | **Folder** | Desktop: native folder dialog. Phone: known project folders or the last desktop folder (not a free-form `C:\` path) |
+| **Access control** | Desktop default is **Full access** (tools run without asking). **Safer** uses `dontAsk` (tools that need approval are denied and the turn continues). Phone / remote chat **never** gets `bypassPermissions` |
+| **First-seen folder** | Desktop warns once when you open a working folder Grok has not used here before |
 | **Stop** | Cancel an in-flight run |
 | **Phone** | Same UI in Safari; reconnects if iOS drops the stream |
 | **Updates** | **Update available** in the sidebar when GitHub has a new commit. Confirm, then the app pulls and restarts (checks at most every 30 minutes) |
@@ -90,6 +92,27 @@ The phone **cannot** apply in-app updates or start Grok sign-in (OAuth). Do thos
 **LAN (opt-in):** 📱 **Allow LAN (trusted network)**, or set `GROK_DESKTOP_ALLOW_LAN=1` / `GROK_DESKTOP_HOST=0.0.0.0`. Only do this on a network you trust — cafe/public Wi‑Fi can then reach the app.
 
 Windows Firewall: allow **Private / Tailscale**, not Public.
+
+## Access control and containment
+
+Grok still runs **on this PC** with real tools. The desktop app can shrink what a bad prompt or a stolen phone token is allowed to do. It cannot make an agent that reads a hostile repo “safe.”
+
+**Desktop — Access control** (composer, next to model / effort):
+
+| Mode | CLI flag | What it means |
+|------|----------|----------------|
+| **Full access** (default) | `--permission-mode bypassPermissions` | Tools run without asking. This is the usual coding-agent mode. |
+| **Safer** | `--permission-mode dontAsk` | Tools that would need approval are **denied** and the turn continues. Good for a chat that should not silently run commands. |
+
+The setting is stored in `~/.grok-desktop/config.json` as `permissionMode`.
+
+**Remote / phone:** chat never gets `bypassPermissions`, no matter what the desktop control says and no matter what the phone JSON body sends. A stolen phone token can still talk in a **known project folder**; it cannot flip the PC into full unattended tool use.
+
+**First-seen folder:** the first time a desktop working folder is not in `seenFolders`, the composer shows a one-line warning that Grok can read and run against whatever is in that folder (a newly cloned repo counts). The path is recorded after the first successful send or an explicit dismiss. The phone already picks a known project, so it does not nag again.
+
+**Window chrome:** the Electron window only navigates to the local API origin (`http://127.0.0.1:<port>` / `localhost`). Markdown / context-menu links open in the system browser **only** if they are `http:` or `https:` — `file:`, `javascript:`, `data:`, and custom protocols are denied. The page has a Content-Security-Policy of `default-src 'self'` (images may be `data:` / `blob:`; styles may be inline; no inline scripts).
+
+**Honest limit:** a repo you asked Grok to work in can still inject via README, issues, or images. These controls shrink blast radius. They do **not** delete the agent problem.
 
 ## Environment variables (optional)
 
@@ -129,7 +152,7 @@ Sessions created here are the same ones the Grok CLI uses.
 |------|---------|
 | `~/.grok/sessions/` | Real Grok session store (shared with the CLI) |
 | `~/.grok/auth.json` | Your Grok credentials — **never commit** |
-| `~/.grok-desktop/config.json` | Bind host/port and the phone-access token |
+| `~/.grok-desktop/config.json` | Bind host/port, phone token, `allowLan`, `permissionMode`, `seenFolders`, last desktop cwd |
 | `~/.grok-desktop/uploads/` | Attached images |
 | `~/.grok-desktop/debug.log` | Optional spawn/stream debug lines |
 

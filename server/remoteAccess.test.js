@@ -13,6 +13,7 @@ const {
   toPublicRemoteInfo,
   toLoopbackRemoteInfo,
   normalizeStoredCwd,
+  folderInSeenList,
 } = require("./remoteAccess");
 
 let failed = 0;
@@ -235,6 +236,25 @@ test("normalizeStoredCwd resolves paths and clears empty", () => {
   assert.ok(path.isAbsolute(abs));
   assert.strictEqual(abs, path.resolve("my-folder"));
   assert.strictEqual(normalizeStoredCwd("C:\\Dev\\GrokDesktop"), path.resolve("C:\\Dev\\GrokDesktop"));
+});
+
+test("folderInSeenList matches slash/case variants on win32", () => {
+  const list = ["C:\\Dev\\GrokDesktop"];
+  assert.strictEqual(folderInSeenList("C:\\Dev\\GrokDesktop", list), true);
+  assert.strictEqual(folderInSeenList("C:/Dev/GrokDesktop", list), true);
+  if (process.platform === "win32") {
+    assert.strictEqual(folderInSeenList("c:/dev/grokdesktop", list), true);
+    assert.strictEqual(folderInSeenList("c:\\dev\\grokdesktop\\", list), true);
+  }
+});
+
+test("folderInSeenList rejects a different path", () => {
+  const list = ["C:\\Dev\\GrokDesktop"];
+  assert.strictEqual(folderInSeenList("C:\\Dev\\OtherProject", list), false);
+  assert.strictEqual(folderInSeenList("D:\\Dev\\GrokDesktop", list), false);
+  assert.strictEqual(folderInSeenList("", list), false);
+  assert.strictEqual(folderInSeenList("C:\\Dev\\GrokDesktop", []), false);
+  assert.strictEqual(folderInSeenList("C:\\Dev\\GrokDesktop", null), false);
 });
 
 if (failed) {

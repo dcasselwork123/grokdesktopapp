@@ -5,6 +5,7 @@ const path = require("path");
 const { randomUUID } = require("crypto");
 const { createServer } = require("../server/httpApi");
 const { resolveAccessSettings } = require("../server/remoteAccess");
+const { isSafeExternalUrl, isApiOrigin } = require("../server/externalUrl");
 
 let mainWindow = null;
 let api = null;
@@ -313,7 +314,7 @@ function attachSelectionContextMenu(win) {
     } else if (params.selectionText && params.selectionText.trim()) {
       items.push({ role: "copy" });
     }
-    if (params.linkURL) {
+    if (params.linkURL && isSafeExternalUrl(params.linkURL)) {
       if (items.length) items.push({ type: "separator" });
       items.push({
         label: "Open link",
@@ -327,11 +328,35 @@ function attachSelectionContextMenu(win) {
   });
 }
 
+function isAllowedApiNavigation(href) {
+  const port = api && api.port;
+  if (port == null) return false;
+  return isApiOrigin(href, { port, host: "127.0.0.1" });
+}
+
+function shouldAllowNavigation(win, nextUrl) {
+  if (isAllowedApiNavigation(nextUrl)) return true;
+  if (api && api.port != null) return false;
+  try {
+    const current = win.webContents.getURL();
+    return !!(current && current === nextUrl);
+  } catch {
+    return false;
+  }
+}
+
 function attachCommonWindowHandlers(win) {
   win.webContents.setWindowOpenHandler(({ url: target }) => {
-    shell.openExternal(target);
+    if (isSafeExternalUrl(target)) {
+      shell.openExternal(target);
+    }
     return { action: "deny" };
   });
+  const blockForeignNav = (event, nextUrl) => {
+    if (!shouldAllowNavigation(win, nextUrl)) event.preventDefault();
+  };
+  win.webContents.on("will-navigate", blockForeignNav);
+  win.webContents.on("will-redirect", blockForeignNav);
   attachSelectionContextMenu(win);
   attachWindowGuards(win);
 }

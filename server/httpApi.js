@@ -35,6 +35,10 @@ const {
   toLoopbackRemoteInfo,
   getLastCwd,
   setLastCwd,
+  getSeenFolders,
+  addSeenFolder,
+  getPermissionMode,
+  setPermissionMode,
 } = require("./remoteAccess");
 const { isSafeSessionId } = require("./sessionId");
 const { getUpdateStatus, applyAppUpdate } = require("./appUpdate");
@@ -783,14 +787,14 @@ async function createServer({
 
       if (pathname === "/api/remote" && req.method === "GET") {
         const info = await rebind();
-        sendJson(
-          res,
-          200,
-          isLoopbackRequest(req)
-            ? toLoopbackRemoteInfo(info)
-            : toPublicRemoteInfo(info),
-          extraHeaders
-        );
+        if (isLoopbackRequest(req)) {
+          const payload = toLoopbackRemoteInfo(info);
+          payload.seenFolders = getSeenFolders();
+          payload.permissionMode = getPermissionMode();
+          sendJson(res, 200, payload, extraHeaders);
+        } else {
+          sendJson(res, 200, toPublicRemoteInfo(info), extraHeaders);
+        }
         return;
       }
 
@@ -808,7 +812,16 @@ async function createServer({
         if (typeof body.lastCwd === "string") {
           setLastCwd(body.lastCwd);
         }
-        sendJson(res, 200, toLoopbackRemoteInfo(await rebind()), extraHeaders);
+        if (typeof body.seenFolder === "string") {
+          addSeenFolder(body.seenFolder);
+        }
+        if (typeof body.permissionMode === "string") {
+          setPermissionMode(body.permissionMode.trim());
+        }
+        const payload = toLoopbackRemoteInfo(await rebind());
+        payload.seenFolders = getSeenFolders();
+        payload.permissionMode = getPermissionMode();
+        sendJson(res, 200, payload, extraHeaders);
         return;
       }
 
@@ -1016,6 +1029,21 @@ async function createServer({
         } else if (typeof body.cwd === "string" && body.cwd.trim()) {
           setLastCwd(body.cwd);
         }
+        let permissionMode;
+        if (remoteChat) {
+          permissionMode = "dontAsk";
+        } else {
+          const bodyMode =
+            typeof body.permissionMode === "string" ? body.permissionMode.trim() : "";
+          if (
+            bodyMode === "bypassPermissions" ||
+            bodyMode === "dontAsk" ||
+            bodyMode === "default"
+          ) {
+            setPermissionMode(bodyMode);
+          }
+          permissionMode = bodyMode || getPermissionMode();
+        }
         const forcedId = newSession ? body.sessionId || createSessionId() : sessionId;
         const clientTurnId =
           typeof body.clientTurnId === "string" ? body.clientTurnId.trim().slice(0, 80) : "";
@@ -1033,6 +1061,8 @@ async function createServer({
           newSession,
           images: savedImages,
           forkFrom: forkFrom || null,
+          permissionMode,
+          remote: remoteChat,
         });
         const record = registerRun(activeRuns, {
           runId,

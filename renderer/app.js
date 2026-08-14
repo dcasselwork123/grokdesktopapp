@@ -26,6 +26,12 @@
     modelMenu: $("#model-menu"),
     effortSlider: $("#effort-slider"),
     effortValue: $("#effort-value"),
+    accessSelector: $("#access-selector"),
+    accessSelectBtn: $("#access-select-btn"),
+    accessSelectLabel: $("#access-select-label"),
+    accessMenu: $("#access-menu"),
+    folderTrust: $("#folder-trust"),
+    folderTrustDismiss: $("#folder-trust-dismiss"),
     cwdInput: $("#cwd-input"),
     sessionIdHint: $("#session-id-hint"),
     runningBar: $("#running-bar"),
@@ -129,10 +135,20 @@
     updateTimer: null,
     updateApplying: false,
     lastUpdateCheckAt: 0,
+    permissionMode: "bypassPermissions",
+    accessMenuOpen: false,
+    seenFolders: [],
+    seenFoldersLocal: [],
   };
 
   // Preferred left→right order for the effort slider (unknown ids sort last)
   const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
+  const PERMISSION_MODES = [
+    { id: "bypassPermissions", label: "Full access" },
+    { id: "dontAsk", label: "Safer" },
+  ];
+  const ACCESS_TOOLTIP =
+    "Full access lets Grok run tools in this folder without asking. Safer denies tools in this headless UI.";
 
   const MAX_ATTACHMENTS = 8;
   // Keep attachments small so vision is fast and uploads stay reliable
@@ -150,6 +166,9 @@
   function isPhoneUi() {
     return isMobileViewport() && !isElectron();
   }
+
+  if (isPhoneUi()) document.body.classList.add("phone-ui");
+  if (isElectron()) document.body.classList.add("is-electron");
 
   function isLoopbackPage() {
     const host = String(location.hostname || "").toLowerCase();
@@ -217,11 +236,17 @@
   }
 
   function setCwd(cwd) {
+    const prev = getCwd();
     const value = (cwd || "").trim();
     els.cwdInput.value = value;
     els.cwdInput.title = value || "Choose working folder";
     if (value) persistLastCwd(value);
     persistLastCwdToServer(value);
+    if (!cwdsEqual(prev, value)) {
+      refreshSeenFolders();
+    } else {
+      updateFolderTrustWarning();
+    }
   }
 
   function getCwd() {
@@ -609,6 +634,207 @@
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && state.modelMenuOpen) closeModelMenu();
+  });
+
+  // ---------- Access (permission mode) + folder trust ----------
+  function canUseDesktopPolicyUi() {
+    return (isElectron() || isLoopbackPage()) && !isPhoneUi();
+  }
+
+  function getPermissionMode() {
+    const id = state.permissionMode;
+    return PERMISSION_MODES.some((m) => m.id === id) ? id : "bypassPermissions";
+  }
+
+  function permissionLabel(id) {
+    const m = PERMISSION_MODES.find((x) => x.id === id);
+    return m ? m.label : "Full access";
+  }
+
+  function closeAccessMenu() {
+    if (!els.accessMenu || !els.accessSelectBtn) return;
+    state.accessMenuOpen = false;
+    els.accessMenu.classList.add("hidden");
+    if (els.accessSelector) els.accessSelector.classList.remove("open");
+    els.accessSelectBtn.setAttribute("aria-expanded", "false");
+  }
+
+  function openAccessMenu() {
+    if (!els.accessMenu || !els.accessSelectBtn) return;
+    renderAccessMenu();
+    state.accessMenuOpen = true;
+    els.accessMenu.classList.remove("hidden");
+    if (els.accessSelector) els.accessSelector.classList.add("open");
+    els.accessSelectBtn.setAttribute("aria-expanded", "true");
+    const selected = els.accessMenu.querySelector('.model-option[aria-selected="true"]');
+    if (selected) {
+      try {
+        selected.focus();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  function toggleAccessMenu() {
+    if (state.accessMenuOpen) closeAccessMenu();
+    else openAccessMenu();
+  }
+
+  function renderAccessMenu() {
+    if (!els.accessMenu) return;
+    els.accessMenu.replaceChildren();
+    const current = getPermissionMode();
+    for (const m of PERMISSION_MODES) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "model-option";
+      btn.setAttribute("role", "option");
+      btn.dataset.id = m.id;
+      btn.setAttribute("aria-selected", m.id === current ? "true" : "false");
+      btn.innerHTML =
+        `<span class="model-option-name"></span><svg class="model-option-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" aria-hidden="true"><path d="M5 12.5l5 5 9-10"/></svg>`;
+      btn.querySelector(".model-option-name").textContent = m.label;
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        setPermissionMode(m.id);
+        closeAccessMenu();
+        if (els.accessSelectBtn) els.accessSelectBtn.focus();
+      });
+      els.accessMenu.appendChild(btn);
+    }
+  }
+
+  function persistPermissionMode(mode) {
+    if (!canUseDesktopPolicyUi()) return;
+    api("/api/remote/settings", {
+      method: "POST",
+      body: JSON.stringify({ permissionMode: mode }),
+    }).catch(() => {
+      /* server may ignore until settings persist is live */
+    });
+  }
+
+  function setPermissionMode(id, { persist = true } = {}) {
+    const next = PERMISSION_MODES.some((m) => m.id === id) ? id : "bypassPermissions";
+    const changed = state.permissionMode !== next;
+    state.permissionMode = next;
+    if (els.accessSelectLabel) els.accessSelectLabel.textContent = permissionLabel(next);
+    if (els.accessSelectBtn) els.accessSelectBtn.title = ACCESS_TOOLTIP;
+    renderAccessMenu();
+    if (persist && changed) persistPermissionMode(next);
+  }
+
+  function folderIsSeen(cwd) {
+    const value = (cwd || "").trim();
+    if (!value) return true;
+    if (state.seenFolders.some((p) => cwdsEqual(p, value))) return true;
+    return state.seenFoldersLocal.some((p) => cwdsEqual(p, value));
+  }
+
+  function updateFolderTrustWarning() {
+    if (!els.folderTrust) return;
+    const cwd = getCwd();
+    const show = !isPhoneUi() && !!cwd && !folderIsSeen(cwd);
+    els.folderTrust.classList.toggle("hidden", !show);
+  }
+
+  function ingestSeenFolders(info) {
+    const list = info && Array.isArray(info.seenFolders) ? info.seenFolders : [];
+    state.seenFolders = list.filter((p) => typeof p === "string" && p.trim()).map((p) => p.trim());
+    if (info && (info.permissionMode === "bypassPermissions" || info.permissionMode === "dontAsk")) {
+      setPermissionMode(info.permissionMode, { persist: false });
+    }
+    updateFolderTrustWarning();
+  }
+
+  function refreshSeenFolders() {
+    updateFolderTrustWarning();
+    if (!isElectron() && !isLoopbackPage()) return;
+    api("/api/remote")
+      .then((info) => {
+        ingestSeenFolders(info);
+      })
+      .catch(() => {
+        updateFolderTrustWarning();
+      });
+  }
+
+  function markFolderSeen(cwd) {
+    const value = (cwd || getCwd() || "").trim();
+    if (!value) return;
+    if (!state.seenFoldersLocal.some((p) => cwdsEqual(p, value))) {
+      state.seenFoldersLocal.push(value);
+    }
+    updateFolderTrustWarning();
+    if (!canUseDesktopPolicyUi()) return;
+    api("/api/remote/settings", {
+      method: "POST",
+      body: JSON.stringify({ seenFolder: value }),
+    })
+      .then((info) => {
+        if (info && Array.isArray(info.seenFolders)) ingestSeenFolders(info);
+      })
+      .catch(() => {
+        /* local hide still applies */
+      });
+  }
+
+  function applyDesktopOnlyComposerChrome() {
+    const phone = isPhoneUi();
+    if (els.accessSelector) els.accessSelector.classList.toggle("hidden", phone);
+    if (phone) closeAccessMenu();
+    updateFolderTrustWarning();
+  }
+
+  setPermissionMode(state.permissionMode, { persist: false });
+  applyDesktopOnlyComposerChrome();
+
+  if (els.accessSelectBtn) {
+    els.accessSelectBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleAccessMenu();
+    });
+    els.accessSelectBtn.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        if (!state.accessMenuOpen) openAccessMenu();
+      } else if (e.key === "Escape") {
+        closeAccessMenu();
+      }
+    });
+  }
+  if (els.accessMenu) {
+    els.accessMenu.addEventListener("keydown", (e) => {
+      const options = [...els.accessMenu.querySelectorAll(".model-option")];
+      const idx = options.indexOf(document.activeElement);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeAccessMenu();
+        if (els.accessSelectBtn) els.accessSelectBtn.focus();
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const next = options[Math.min(options.length - 1, idx + 1)] || options[0];
+        if (next) next.focus();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const prev = options[Math.max(0, idx - 1)] || options[options.length - 1];
+        if (prev) prev.focus();
+      }
+    });
+  }
+  if (els.folderTrustDismiss) {
+    els.folderTrustDismiss.addEventListener("click", () => {
+      markFolderSeen(getCwd());
+    });
+  }
+  document.addEventListener("click", (e) => {
+    if (!state.accessMenuOpen) return;
+    if (els.accessSelector && els.accessSelector.contains(e.target)) return;
+    closeAccessMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && state.accessMenuOpen) closeAccessMenu();
   });
 
   // ---------- Sessions ----------
@@ -1667,6 +1893,7 @@
       text: "",
       thought: "",
       toolMap: new Map(),
+      toolUsed: false,
       sessionId: state.activeSessionId,
     };
     bindThoughtToggle(shell);
@@ -1712,8 +1939,24 @@
     scheduleAssistantMarkdown(shell);
   }
 
+  function markToolUsed(shell) {
+    if (!shell) return;
+    shell.toolUsed = true;
+    if (!shouldRenderShell(shell) || !shell.el) return;
+    if (shell.el.querySelector(".tool-used-flag")) return;
+    const flag = document.createElement("div");
+    flag.className = "tool-used-flag";
+    flag.textContent = "Grok ran a command";
+    if (shell.toolsEl && shell.toolsEl.parentNode) {
+      shell.toolsEl.parentNode.insertBefore(flag, shell.toolsEl.nextSibling);
+    } else {
+      shell.el.appendChild(flag);
+    }
+  }
+
   function upsertTool(shell, src) {
     if (!shell || !shouldRenderShell(shell) || !shell.toolsEl) return;
+    markToolUsed(shell);
     const info = describeTool(src || {});
     const id = info.id || src.id || src.toolCallId;
     if (!id) return;
@@ -2195,6 +2438,7 @@
     if (!isNew) body.sessionId = state.activeSessionId;
     if (forkFrom) body.forkFrom = forkFrom;
     if (cwd) body.cwd = cwd;
+    if (!isPhoneUi()) body.permissionMode = getPermissionMode();
     if (pendingImages.length) {
       body.images = pendingImages.map((a) => ({
         data: a.dataUrl,
@@ -2282,6 +2526,7 @@
       }
 
       streamStarted = true;
+      if (cwd && !isPhoneUi()) markFolderSeen(cwd);
       sawDone = await readSseStream(res, shell, onSession, onGrokActivity);
 
       if (!sawDone && !ac.signal.aborted && (state.runId || gotSessionId || clientTurnId)) {
@@ -2450,9 +2695,11 @@
           text: "",
           thought: "",
           toolMap: new Map(),
+          toolUsed: !!(last.querySelector(".tool-used-flag") || last.querySelector(".tool-chip")),
           sessionId: state.activeSessionId,
         };
         ensureThoughtUi(shell);
+        if (shell.toolUsed) markToolUsed(shell);
         return shell;
       }
     }
@@ -2477,6 +2724,7 @@
         if (chip && !shell.toolsEl.contains(chip)) shell.toolsEl.appendChild(chip);
       }
     }
+    if (shell.toolUsed) markToolUsed(shell);
   }
 
   function newClientTurnId() {
@@ -3639,6 +3887,7 @@
 
   function applyRemoteInfo(info) {
     lastRemoteInfo = info || null;
+    ingestSeenFolders(info);
     const urlEl = document.getElementById("remote-url");
     const noteEl = document.getElementById("remote-bind-note");
     const statusEl = document.getElementById("remote-status");
@@ -4090,7 +4339,7 @@
     els.setupGate.setAttribute("aria-hidden", "false");
   }
 
-  function setSetupChrome({ title, message, detailsHtml, installCmd, hint, actions }) {
+  function setSetupChrome({ title, message, detailsHtml, installCmd, hint, hintDocsUrl, actions }) {
     if (els.setupTitle) els.setupTitle.textContent = title || "";
     if (els.setupMessage) els.setupMessage.textContent = message || "";
     if (els.setupDetails) {
@@ -4112,7 +4361,18 @@
       }
     }
     if (els.setupHint) {
-      els.setupHint.innerHTML = hint || "";
+      els.setupHint.replaceChildren();
+      if (hintDocsUrl) {
+        els.setupHint.append("Docs: ");
+        const a = document.createElement("a");
+        a.href = String(hintDocsUrl);
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = String(hintDocsUrl);
+        els.setupHint.appendChild(a);
+      } else {
+        els.setupHint.textContent = hint || "";
+      }
     }
     if (els.setupActions) {
       els.setupActions.innerHTML = "";
@@ -4204,9 +4464,7 @@
             )}</code> or <code>grok</code> on your PATH.`
           : "",
         installCmd: cmd,
-        hint: `Docs: <a href="${escapeHtml(docs)}" target="_blank" rel="noopener">${escapeHtml(
-          docs
-        )}</a>`,
+        hintDocsUrl: docs,
         actions: [
           {
             label: "Copy install command",
@@ -4292,7 +4550,7 @@
         )}</div>`,
         hint: phone
           ? "You’re on a phone — finish sign-in on the PC running Grok Desktop."
-          : "If no browser opened, run <code>grok login --oauth</code> in a terminal.",
+          : "If no browser opened, run grok login --oauth in a terminal.",
         actions: runningActions,
       });
       setStatus(null, "Signing in…");
@@ -4316,7 +4574,7 @@
             ? `<div style="margin-top:6px;color:var(--danger)">${escapeHtml(login.error)}</div>`
             : ""
         }`,
-        hint: "Use <strong>Sign in with X</strong> or <strong>Sign in with email</strong> in the desktop app. OAuth opens on the PC.",
+        hint: "Use Sign in with X or Sign in with email in the desktop app. OAuth opens on the PC.",
         actions: [
           {
             label: "Recheck",
@@ -4339,7 +4597,7 @@
           ? `<div style="margin-top:6px;color:var(--danger)">${escapeHtml(login.error)}</div>`
           : ""
       }`,
-      hint: "Opens the Grok sign-in page (<code>grok login --oauth</code>). Choose X or email there.",
+      hint: "Opens the Grok sign-in page (grok login --oauth). Choose X or email there.",
       actions: [
         {
           label: "Sign in with X",
@@ -4474,7 +4732,7 @@
       setSetupChrome({
         title,
         message: raw || "Could not start login.",
-        hint: "You can also run <code>grok login --oauth</code> in a terminal, then Recheck. If this just updated, fully quit and relaunch Grok Desktop on the PC.",
+        hint: "You can also run grok login --oauth in a terminal, then Recheck. If this just updated, fully quit and relaunch Grok Desktop on the PC.",
         actions: [
           {
             label: "Try again",
@@ -4517,6 +4775,8 @@
       }
       updateAccountUi(setup || state.setup);
       refreshUsage();
+      applyDesktopOnlyComposerChrome();
+      refreshSeenFolders();
       return;
     }
     bootContinued = true;
@@ -4543,6 +4803,8 @@
 
     await refreshSessions();
     if (!getCwd()) setCwd(rememberedCwd() || guessDefaultCwd());
+    applyDesktopOnlyComposerChrome();
+    refreshSeenFolders();
 
     if (state.pendingSidechat) {
       applySidechatChrome();
@@ -4848,6 +5110,7 @@
       // Ensure help modal never blocks the chat on first paint
       els.modalBackdrop.classList.add("hidden");
     }
+    applyDesktopOnlyComposerChrome();
     await checkSetupAndBoot();
   }
 

@@ -585,31 +585,102 @@ function parseImageData(data, mimeType = "image/png") {
   return { buf, mimeType: mime.startsWith("image/") ? mime : "image/png" };
 }
 
+const IMAGE_MAGIC_EXT = {
+  jpeg: ".jpg",
+  png: ".png",
+  gif: ".gif",
+  webp: ".webp",
+};
+
+const IMAGE_MAGIC_MIME = {
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+};
+
+const IMAGE_MIME_KIND = {
+  "image/jpeg": "jpeg",
+  "image/jpg": "jpeg",
+  "image/png": "png",
+  "image/gif": "gif",
+  "image/webp": "webp",
+};
+
+/** Detect JPEG / PNG / GIF / WEBP from magic bytes (prefix only). */
+function detectImageMagic(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 2) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8) return "jpeg";
+  if (
+    buf.length >= 4 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47
+  ) {
+    return "png";
+  }
+  if (
+    buf.length >= 4 &&
+    buf[0] === 0x47 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x38
+  ) {
+    return "gif";
+  }
+  if (
+    buf.length >= 12 &&
+    buf[0] === 0x52 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x46 &&
+    buf[8] === 0x57 &&
+    buf[9] === 0x45 &&
+    buf[10] === 0x42 &&
+    buf[11] === 0x50
+  ) {
+    return "webp";
+  }
+  return null;
+}
+
+function resolveImageKind(buf, mime) {
+  const magic = detectImageMagic(buf);
+  const declared = IMAGE_MIME_KIND[mime];
+  if (declared) {
+    if (magic !== declared) {
+      throw new Error(
+        `Image bytes do not match declared type ${mime} (expected ${declared.toUpperCase()} magic)`
+      );
+    }
+    return declared;
+  }
+  if (!magic) {
+    throw new Error("Unrecognized image format (expected JPEG, PNG, GIF, or WEBP)");
+  }
+  return magic;
+}
+
 /**
  * Save a base64 (or data-URL) image under ~/.grok-desktop/uploads.
  * Short UUID filenames avoid awkward names and are easy to pass to Grok.
  */
 function saveImageUpload({ data, mimeType = "image/png", name = "image" } = {}) {
   const { buf, mimeType: mime } = parseImageData(data, mimeType);
+  const kind = resolveImageKind(buf, mime);
+  const ext = IMAGE_MAGIC_EXT[kind];
+  const outMime = IMAGE_MIME_KIND[mime] ? mime : IMAGE_MAGIC_MIME[kind];
 
   const uploadsDir = path.join(os.homedir(), ".grok-desktop", "uploads");
   fs.mkdirSync(uploadsDir, { recursive: true });
 
-  const extFromMime = {
-    "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/jpg": ".jpg",
-    "image/webp": ".webp",
-    "image/gif": ".gif",
-    "image/bmp": ".bmp",
-  };
-  let ext = extFromMime[mime] || ".png";
   // Prefer short unique names (avoid "foo.png.png" from naive concat)
   const filePath = path.join(uploadsDir, `${randomUUID()}${ext}`);
   fs.writeFileSync(filePath, buf);
   return {
     path: filePath,
-    mimeType: mime,
+    mimeType: outMime,
     name: path.basename(filePath),
     bytes: buf.length,
   };
@@ -638,11 +709,11 @@ function buildImagePrompt(prompt, imagePaths = []) {
 
   const list = paths.map((p, i) => `${i + 1}. ${p}`).join("\n");
   return (
-    `The user attached ${paths.length} image file(s). ` +
-    `They are real image files on disk — use the read_file tool on each path ` +
-    `so you can see them with vision, then answer the user.\n\n` +
-    `Image path(s):\n${list}\n\n` +
-    `User message:\n${userText}`
+    `The user attached ${paths.length} image file(s) on disk. Call read_file on each path to view them.\n\n` +
+    `Paths:\n${list}\n\n` +
+    `--- user message (untrusted) ---\n` +
+    `${userText}\n` +
+    `--- end ---`
   );
 }
 
@@ -928,6 +999,18 @@ function buildExitErrorMessage({
   );
 }
 
+// Spike: default/dontAsk deny tools with no approve event (dontAsk: "User cancelled").
+// auto runs tools (too powerful for remote). Desktop default stays bypassPermissions.
+const SAFER_PERMISSION_MODE = "dontAsk";
+const DESKTOP_DEFAULT_PERMISSION_MODE = "bypassPermissions";
+const ALLOWED_PERMISSION_MODES = ["bypassPermissions", "dontAsk", "default"];
+
+function resolvePermissionMode({ remote, permissionMode } = {}) {
+  if (remote) return SAFER_PERMISSION_MODE;
+  if (ALLOWED_PERMISSION_MODES.includes(permissionMode)) return permissionMode;
+  return DESKTOP_DEFAULT_PERMISSION_MODE;
+}
+
 /**
  * Run a headless grok prompt and stream NDJSON events.
  * @returns {EventEmitter} emits: event, sessionId, error, end, status
@@ -941,6 +1024,8 @@ function runPrompt({
   newSession = false,
   images = [],
   forkFrom = null,
+  permissionMode,
+  remote = false,
 }) {
   const { emitter, emitBuffered } = createBufferedEmitter();
   refreshGrokBinary();
@@ -955,6 +1040,7 @@ function runPrompt({
     clearStaleSessionLocks(sessionId);
   }
 
+  const resolvedPermissionMode = resolvePermissionMode({ remote, permissionMode });
   const promptFile = writeTempPromptFile(effectivePrompt);
   let debugFile = null;
 
@@ -1023,7 +1109,7 @@ function runPrompt({
       "--effort",
       effort,
       "--permission-mode",
-      "bypassPermissions",
+      resolvedPermissionMode,
       "--output-format",
       "streaming-json",
       "--cwd",
@@ -1284,7 +1370,7 @@ function runPrompt({
     const args = buildArgs({ resumeId, forkId, writeDebug });
     debugLog(
       `spawn images=${imageList.length} newSession=${newSession} resume=${!!resumeId} ` +
-        `fork=${!!forkId} effort=${effort} cwd=${cwd} promptChars=${effectivePrompt.length} ` +
+        `fork=${!!forkId} effort=${effort} permissionMode=${resolvedPermissionMode} cwd=${cwd} promptChars=${effectivePrompt.length} ` +
         `imgPaths=${imageList.map((i) => (typeof i === "string" ? i : i.path)).join("|")}`
     );
     let proc;
@@ -1756,6 +1842,10 @@ module.exports = {
   loadSessionMessages,
   loadModels,
   runPrompt,
+  resolvePermissionMode,
+  SAFER_PERMISSION_MODE,
+  DESKTOP_DEFAULT_PERMISSION_MODE,
+  buildImagePrompt,
   saveImageUpload,
   createSessionId,
   getStatus,

@@ -49,8 +49,27 @@ No Artifacts / Routines / Customize chrome. Sessions are real Grok sessions (sha
 | **Browser / `npm run server`** | Free-text path still works (no Electron dialog). |
 | **Changing folder** | If the path differs from the open session’s cwd, the app starts a **new draft chat** in that folder (does not resume the old session). |
 | **Mobile** | Folder field is hidden in the composer. On **+ New**, a sheet lists **unique project folders** from existing sessions, or the last folder chosen on the desktop (cannot pick an arbitrary `C:\` path from the phone). |
+| **First-seen folder** | Desktop: if the cwd is not in `seenFolders` (`~/.grok-desktop/config.json`), show a one-line composer warning that Grok can read and run against this folder. Record the path after the first successful send or dismiss. A newly cloned repo is first-seen. Mobile already picked a known project — no extra nag. |
 
 IPC: `electron/main.js` → `pick-folder`; `electron/preload.js` → `grokDesktop.pickFolder()`.
+
+### Access control (permission mode)
+
+| Context | Mode |
+|---------|------|
+| **Desktop default** | **Full access** — `--permission-mode bypassPermissions`. Tools run without asking. |
+| **Desktop Safer** | `--permission-mode dontAsk`. Tools that need approval are denied and the turn continues. |
+| **Remote / phone** | **Never** `bypassPermissions`, regardless of the desktop setting or a `permissionMode` field on the chat body. |
+
+Persist as `permissionMode` in `~/.grok-desktop/config.json`. Do not take a permission mode from remote JSON.
+
+**Honest limit:** a hostile repo can still inject via README / issues / images. Full vs Safer + first-seen warning shrink blast radius. They do **not** delete the agent problem.
+
+### Electron chrome / CSP
+
+- **CSP** in `renderer/index.html` `<head>`: `default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'self'; form-action 'self'`. Keep the critical inline `<style>`; no `unsafe-inline` scripts.
+- **`openExternal` / context-menu “Open link”:** only `http:` and `https:` (`server/externalUrl.js` → `isSafeExternalUrl`). Deny `file:`, `javascript:`, `data:`, custom protocols.
+- **`will-navigate` / `will-redirect`:** only the API origin (`http://127.0.0.1:<port>` / `localhost`). If the API is not up yet, deny navigation away from the current URL. Always `{ action: "deny" }` for in-window popups.
 
 ### Image attachments
 
@@ -169,7 +188,7 @@ npm.cmd run server       # node server/index.js → http://127.0.0.1:3847
 
 **Requirements:** Node 18+. Grok CLI + sign-in are checked at startup (see **Startup setup gate** above). Fresh clones: user installs CLI and/or clicks **Sign in with Grok** — no shared account secrets in the repo.
 
-**Config / remote:** `~/.grok-desktop/config.json` (token, host, port, `allowLan`, last desktop cwd). Default bind is `127.0.0.1` + Tailscale `100.x` (not `0.0.0.0`). Phone URL = PC Tailscale IP + port + `?token=…` (📱 copies it when Tailscale is up; no LAN fallback unless Allow LAN is on). Auth: loopback open; remote `?token=` is a one-time Safari bootstrap, then an HttpOnly SameSite=Strict cookie. API fetches do not put the token in the query string and do not keep it in localStorage.
+**Config / remote:** `~/.grok-desktop/config.json` (token, host, port, `allowLan`, `permissionMode`, `seenFolders`, last desktop cwd). Default bind is `127.0.0.1` + Tailscale `100.x` (not `0.0.0.0`). Phone URL = PC Tailscale IP + port + `?token=…` (📱 copies it when Tailscale is up; no LAN fallback unless Allow LAN is on). Auth: loopback open; remote `?token=` is a one-time Safari bootstrap, then an HttpOnly SameSite=Strict cookie. API fetches do not put the token in the query string and do not keep it in localStorage.
 
 **Local data (user machine, not in repo):**
 
@@ -177,7 +196,7 @@ npm.cmd run server       # node server/index.js → http://127.0.0.1:3847
 |------|---------|
 | `~/.grok/sessions/` | Real Grok session store (shared with CLI) |
 | `~/.grok/auth.json` | Grok OAuth / account credentials (**never commit**; each user signs in locally) |
-| `~/.grok-desktop/config.json` | Desktop bind host/port/token/`allowLan` |
+| `~/.grok-desktop/config.json` | Desktop bind host/port/token/`allowLan`/`permissionMode`/`seenFolders` |
 | `~/.grok-desktop/uploads/` | Attached images saved for the current machine |
 | `~/.grok-desktop/debug.log` | Optional spawn/stream debug lines |
 
@@ -196,7 +215,7 @@ GrokDesktop/
 ├── screenshots/            ← e.g. mobileview.png
 │
 ├── electron/
-│   ├── main.js             ← BrowserWindow + HTTP API + pick-folder IPC + copy/edit menu
+│   ├── main.js             ← BrowserWindow + HTTP API + pick-folder IPC + copy/edit menu + nav lock
 │   └── preload.js          ← grokDesktop.isElectron / getApiInfo / pickFolder
 │
 ├── server/
@@ -204,10 +223,11 @@ GrokDesktop/
 │   ├── httpApi.js          ← REST + SSE chat + static UI + token/cookie auth + /api/setup + /api/auth/login
 │   ├── grokService.js      ← sessions, models, spawn grok -p, image save, setup/auth/login
 │   ├── appUpdate.js        ← git fetch (30 min) + pull / npm install / restart
-│   └── remoteAccess.js     ← config, token, Tailscale IP, phone URL
+│   ├── remoteAccess.js     ← config, token, Tailscale IP, phone URL
+│   └── externalUrl.js      ← http(s)-only openExternal; API-origin navigation
 │
 └── renderer/               ← same UI for desktop window + phone browser
-    ├── index.html          ← setup gate, composer, folder control, attach UI, modals
+    ├── index.html          ← CSP meta, setup gate, composer, folder control, attach UI, modals
     ├── styles.css          ← desktop + mobile chat layout + setup gate
     └── app.js              ← setup gate boot, sessions, SSE, folder/images, mobile drawer
 ```
@@ -235,6 +255,8 @@ UI (Electron or Safari)
 | Chat / sessions / streaming | `server/grokService.js`, `server/httpApi.js`, `renderer/app.js` |
 | **Setup gate / install / sign-in** | `server/grokService.js` (`getSetupStatus`, `startGrokLogin`), `server/httpApi.js`, `renderer/app.js`, `renderer/index.html`, `renderer/styles.css` |
 | Folder picker (native dialog) | `electron/main.js`, `electron/preload.js`, `renderer/app.js` |
+| Access control / first-seen folder | `server/grokService.js` (`buildArgs`), `server/remoteAccess.js`, composer in `renderer/` |
+| External links / CSP / will-navigate | `server/externalUrl.js`, `electron/main.js` (`attachCommonWindowHandlers`), `renderer/index.html` `<head>` |
 | Images / attachments | `renderer/app.js`, `server/httpApi.js`, `server/grokService.js` |
 | Mobile new-session projects | `renderer/app.js`, `renderer/index.html` (folder-picker modal) |
 | Tailscale / token / bind | `server/remoteAccess.js`, `electron/main.js`, `server/httpApi.js` |
