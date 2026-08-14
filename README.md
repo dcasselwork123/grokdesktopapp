@@ -1,98 +1,96 @@
 # Grok Desktop
 
-A small **Claude Desktop–style** UI for [Grok Build](https://grok.com): session list on the left, chat in the center, model + effort selectors on the bottom. No terminal required for day-to-day use.
+A **Claude Desktop–style** UI for [Grok Build](https://grok.com): sessions on the left, chat in the center, model + effort on the bottom. Day-to-day use does not need a terminal.
 
-Grok still runs on your machine (full tools, same sessions under `~/.grok/sessions`). The app shells out to the `grok` CLI in headless mode and streams the reply into a chat UI.
+Grok still runs on **your** machine (full tools, same sessions under `~/.grok/sessions`). The app shells out to the `grok` CLI in headless mode and streams the reply into a chat UI.
+
+The same UI works in the Electron window and in mobile Safari over Tailscale while the app is running.
+
+![Grok Desktop on iPhone](screenshots/mobileview.png)
 
 ## Requirements
 
 - **Node.js 18+**
-- **Grok CLI** installed and logged in (`grok` on PATH, or `~/.grok/bin/grok.exe`)
+- A **Grok** account ([x.ai](https://x.ai) / [grok.com](https://grok.com))
 
-On first launch the app checks both:
+You do **not** need to install the Grok CLI or sign in from a terminal first. On launch the app checks both and walks you through it.
 
-1. **Is the Grok CLI installed?** If not, it shows **Install Grok CLI** with the official install command (Windows PowerShell / macOS-Linux) and a Recheck button.
-2. **Are you signed in?** It looks for a valid `~/.grok/auth.json`. If missing or invalid, it shows **Sign in with Grok**, which runs `grok login --oauth` (same browser OAuth flow as the CLI).
-
-Someone who pulls this repo can use their own Grok account without manual terminal setup beyond installing the CLI (or even that, via the install screen).
-
-## Quick start
+## First launch
 
 ```powershell
-cd C:\Dev\GrokDesktop
-npm.cmd install
-npm.cmd start
+git clone https://github.com/dcasselwork123/grokdesktopapp.git
+cd grokdesktopapp
+npm install
 ```
 
-That opens the Electron window. The same UI is also served at **http://127.0.0.1:3847**.
+Then either:
 
-### Server only (no Electron)
+| How | Notes |
+|-----|--------|
+| Double-click **`Start Grok Desktop.vbs`** | Normal daily launch (no console) |
+| Double-click **`Start Grok Desktop.bat`** | Same app; keeps a console if startup fails |
+| `npm start` | Electron from a terminal |
+
+The first window is a **setup gate**, not the chat:
+
+1. **Install Grok CLI** — if `grok` is missing, the app shows the official install command ([x.ai/cli](https://x.ai/cli)) for Windows PowerShell or macOS/Linux, plus **Copy** and **Recheck**.
+2. **Sign in** — pick **Sign in with X** or **Sign in with email**, matching the Grok account you actually use. That starts `grok login --oauth` and opens the Grok sign-in page in your browser. Finish there; the app polls until `~/.grok/auth.json` is valid, then the gate hides.
+
+Each clone uses **your** Grok account. Nothing in this repo is a shared login.
+
+Later you can switch or leave from the **account bubble** in the sidebar footer: Sign in with X, Sign in with email, or **Log out**.
+
+### Server only (browser, no Electron)
 
 ```powershell
-npm.cmd run server
+npm run server
 ```
 
-Then open http://127.0.0.1:3847 in a browser.
+Then open http://127.0.0.1:3847. The setup gate is the same.
 
 ## Features
 
 | Area | What you get |
 |------|----------------|
-| **Sessions** | Lists real Grok sessions from `~/.grok/sessions`, grouped by project |
-| **Chat** | Clean dark chat UI (styled after Claude Desktop) |
-| **New** | Top-left **+ New** starts a fresh session |
-| **Model / Effort** | Bottom bar selectors (from Grok’s model cache) |
-| **Folder** | Working directory for new sessions |
-| **Tools** | Tool calls show as compact chips while Grok works |
-| **Stop** | Cancel an in-flight headless run |
+| **Setup gate** | Install CLI + Sign in with X or email before chat unlocks |
+| **Account** | Sidebar avatar: who you’re signed in as, switch X/email, log out |
+| **Sessions** | Real Grok sessions from `~/.grok/sessions`, grouped by project. Right-click to rename; Select to archive/delete |
+| **Chat** | Dark chat UI; markdown tables; tool-call chips while Grok works |
+| **Background turns** | Switching chats does not kill a run that is still going |
+| **Queue** | Type a follow-up while a turn is running; it sends when Grok is free |
+| **`/btw`** | Side chat in a new window (or tab) with a fork of the current session |
+| **`/clear` / `/new`** | Fresh draft in the same folder |
+| **Images** | **+**, paste, or drag-and-drop (max 8). Re-encoded to JPEG on the client |
+| **Model / Effort** | Composer selectors, including a custom model picker |
+| **Usage** | Weekly usage pie in the composer; click for session context |
+| **Folder** | Desktop: native folder dialog. Phone: pick a project from existing sessions |
+| **Stop** | Cancel an in-flight run |
+| **Phone** | Same UI in Safari; reconnects if iOS drops the stream |
 
-## Use from iPhone (recommended)
+## Use from iPhone
 
-You do **not** need to use a terminal on the phone. Run the web UI on your PC and open it in Safari over a private mesh network.
-
-### Option A — Tailscale + browser (best)
+Keep Grok Desktop running on the PC. On the PC, click **📱** in the sidebar footer and **Copy phone URL**. That link includes the access token.
 
 1. Install [Tailscale](https://tailscale.com/download) on the PC and iPhone; sign into the same account.
-2. On the PC, start the server bound to all interfaces with a shared secret:
+2. On the phone, open the copied URL in Safari (`http://100.x.y.z:3847/?token=…`).
 
-```powershell
-cd C:\Dev\GrokDesktop
-$env:GROK_DESKTOP_HOST = "0.0.0.0"
-$env:GROK_DESKTOP_TOKEN = "pick-a-long-secret"
-$env:GROK_DESKTOP_PORT = "3847"
-npm.cmd run server
-```
+The app already binds to `0.0.0.0:3847` and stores a random token in `~/.grok-desktop/config.json`. You do not need to set env vars for the usual case.
 
-3. On the iPhone, open Tailscale → note your **PC’s Tailscale IP** (e.g. `100.x.y.z`).
-4. In Safari open:
+Loopback (`127.0.0.1`) does not need a token. Anything remote does — after the first `?token=` load, a cookie keeps CSS/JS working.
 
-```
-http://100.x.y.z:3847/?token=pick-a-long-secret
-```
+If you sign in from the phone, the OAuth browser still opens **on the PC**. Finish login there.
 
-Same session list, same chat, same model/effort controls. Grok keeps running on the PC.
+**LAN only (no Tailscale):** same URL with your PC’s LAN IP. Only do this on a trusted network.
 
-### Option B — SSH app (fallback)
+## Environment variables (optional)
 
-If you only want a terminal remote:
-
-1. Enable OpenSSH Server on Windows (optional) or use another SSH host.
-2. Install **Termius** or **Blink Shell** on the iPhone.
-3. SSH in and run `grok` / `grok --resume <session-id>`.
-
-This works, but you still get a TUI. Prefer Option A.
-
-### Option C — LAN only (home Wi‑Fi)
-
-Same as A without Tailscale, using your PC’s LAN IP. Only safe on a trusted network; always set `GROK_DESKTOP_TOKEN`.
-
-## Environment variables
+Defaults live in `~/.grok-desktop/config.json`. Env vars override the file.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `GROK_DESKTOP_PORT` | `3847` | HTTP port |
-| `GROK_DESKTOP_HOST` | `127.0.0.1` | Bind address (`0.0.0.0` for remote) |
-| `GROK_DESKTOP_TOKEN` | _(none)_ | If set, required as `?token=` or `X-Grok-Token` |
+| `GROK_DESKTOP_HOST` | `0.0.0.0` | Bind address |
+| `GROK_DESKTOP_TOKEN` | auto-generated | Required as `?token=` or `X-Grok-Token` for non-loopback |
 | `GROK_BIN` | auto | Path to `grok` / `grok.exe` |
 | `GROK_HOME` | `~/.grok` | Grok config/sessions root |
 
@@ -108,36 +106,51 @@ Same as A without Tailscale, using your PC’s LAN IP. Only safe on a trusted ne
                                             ~/.grok/sessions/*
 ```
 
-- **List / history**: reads `summary.json` + `updates.jsonl` from disk  
-- **Send message**: `grok -p "…" --resume <id> --output-format streaming-json --permission-mode bypassPermissions`  
-- **New session**: same without `--resume` (or with a fresh UUID)
+- **Setup:** `GET /api/setup` — CLI present? `auth.json` valid?
+- **Sign-in:** `POST /api/auth/login` → `grok login --oauth` (X or email in the browser)
+- **Send:** `grok -p "…" --output-format streaming-json` (plus `--resume` when continuing)
+- **Images:** saved under `~/.grok-desktop/uploads/`; absolute paths go in the `-p` prompt so Grok can `read_file` them
 
-Sessions created here are the same ones `grok` / Claude-style resume lists use.
+Sessions created here are the same ones the Grok CLI uses.
 
-## Layout (what we intentionally skipped)
+## Data on your machine (not in this repo)
 
-Matching your request: **no** Artifacts, Routines, Customize, or Home/Code chrome from the Claude Desktop screenshot — just sessions, chat, and model/effort.
+| Path | Purpose |
+|------|---------|
+| `~/.grok/sessions/` | Real Grok session store (shared with the CLI) |
+| `~/.grok/auth.json` | Your Grok credentials — **never commit** |
+| `~/.grok-desktop/config.json` | Bind host/port and the phone-access token |
+| `~/.grok-desktop/uploads/` | Attached images |
+| `~/.grok-desktop/debug.log` | Optional spawn/stream debug lines |
+
+## Working on the app
+
+[`AGENTS.md`](AGENTS.md) is the project brief: layout, features to keep working, setup-gate rules, and how to start it. Read that before changing code.
+
+There is no compile step. Launchers load the files on disk — quit and relaunch after edits.
 
 ## Troubleshooting
 
-**“Connected” never appears**  
-Check that nothing else owns port 3847, or set `GROK_DESKTOP_PORT`.
-
-**Send fails / empty reply**  
-Use **Sign in with Grok** on the setup screen, or run `grok login` in a terminal and Recheck. Confirm with `grok -p "hi" --output-format json`.
-
-**Install / sign-in screen won’t clear**  
-- Install: `irm https://x.ai/cli/install.ps1 | iex` (Windows) or `curl -fsSL https://x.ai/cli/install.sh | bash`, then Recheck.  
+**Setup gate won’t go away**
+- Install: `irm https://x.ai/cli/install.ps1 | iex` (Windows) or `curl -fsSL https://x.ai/cli/install.sh | bash`, then **Recheck**.
+- Sign-in: use **Sign in with X** or **Sign in with email**, then finish in the browser that opened on the PC. You can also run `grok login --oauth` in a terminal and Recheck.
 - Auth file: `%USERPROFILE%\.grok\auth.json` (Windows) or `~/.grok/auth.json`.
 
-**Sessions missing**  
-They live under `%USERPROFILE%\.grok\sessions`. The app only shows folders that have a `summary.json`.
+**Send fails / empty reply**  
+Confirm you’re signed in (account bubble in the sidebar). In a terminal: `grok -p "hi" --output-format json`.
 
-**Phone can’t connect**  
-- Host must be `0.0.0.0`  
-- Windows Firewall may prompt on first bind — allow private/Tailscale  
-- Use the Tailscale IP, not `127.0.0.1`, on the phone  
+**Phone can’t connect**
+- App must be running on the PC
+- Use the **📱 Copy phone URL** link (includes `?token=`)
+- Use the Tailscale IP, not `127.0.0.1`, on the phone
+- Windows Firewall may prompt on first bind — allow private/Tailscale
+
+**Sessions missing**  
+They live under `%USERPROFILE%\.grok\sessions`. The app lists folders that have a `summary.json`.
+
+**Port already in use**  
+Set `GROK_DESKTOP_PORT`, or quit the other process on 3847.
 
 ## License
 
-Private / personal use.
+Source is public so you can run and modify it. No warranty. You need your own Grok account; this repo does not ship credentials.
