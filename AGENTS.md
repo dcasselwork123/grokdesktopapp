@@ -77,7 +77,7 @@ If this folder is a git checkout of the app, the sidebar footer can show **Updat
 
 | | |
 |--|--|
-| **Check** | `GET /api/update` — `git fetch origin` at most every **30 minutes** (startup + interval + window focus all share that cap). Treat as available if GitHub is ahead of **disk HEAD** or the SHA from when this process started (so a running app still offers restart after files were already pulled). |
+| **Check** | `GET /api/update` — `git fetch origin` at most every **30 minutes** (startup + interval + window focus all share that cap). Only show **Update available** when **disk HEAD** is behind `origin/main`. |
 | **Confirm** | Button opens a modal with the incoming commit subject(s) |
 | **Apply** | `POST /api/update` — `git pull --ff-only`, `npm install` only if `package.json` / lockfile changed, then Electron `app.relaunch()` |
 | **Hidden when** | Not a git checkout, git missing, already current, or local branch has diverged / is ahead |
