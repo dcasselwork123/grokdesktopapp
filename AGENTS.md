@@ -1,4 +1,4 @@
-# Grok Desktop — project brief
+# Grok Desktop — project guide
 
 ## READ THIS FIRST (fresh sessions)
 
