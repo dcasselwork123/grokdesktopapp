@@ -52,6 +52,17 @@ if (!gotTheLock) {
   app.quit();
 }
 
+function restartDesktopApp() {
+  console.log("[Grok Desktop] Restarting after app update…");
+  try {
+    app.relaunch();
+  } catch (err) {
+    console.error("[Grok Desktop] relaunch failed:", formatError(err));
+    return;
+  }
+  app.exit(0);
+}
+
 async function startApi() {
   if (api) return api;
   access = resolveAccessSettings();
@@ -73,6 +84,7 @@ async function startApi() {
         host: access.host, // default 0.0.0.0 → Tailscale-reachable
         staticDir,
         token: access.token,
+        onAppRestart: restartDesktopApp,
       });
       console.log(`[Grok Desktop] Local UI:  ${api.url}`);
       if (api.port !== access.port) {

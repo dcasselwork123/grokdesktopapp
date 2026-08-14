@@ -74,6 +74,14 @@
     usagePopover: document.getElementById("usage-popover"),
     usagePopBody: document.getElementById("usage-pop-body"),
     usagePopClose: document.getElementById("usage-pop-close"),
+    btnUpdate: document.getElementById("btn-update"),
+    updateBackdrop: document.getElementById("update-backdrop"),
+    updateTitle: document.getElementById("update-title"),
+    updateCommit: document.getElementById("update-commit"),
+    updateNote: document.getElementById("update-note"),
+    updateProgress: document.getElementById("update-progress"),
+    updateCancel: document.getElementById("update-cancel"),
+    updateConfirm: document.getElementById("update-confirm"),
   };
 
   const state = {
@@ -118,6 +126,10 @@
     setup: null,
     loginPollTimer: null,
     loginMethod: null,
+    appUpdate: null,
+    updateTimer: null,
+    updateApplying: false,
+    lastUpdateCheckAt: 0,
   };
 
   // Preferred left→right order for the effort slider (unknown ids sort last)
@@ -2551,7 +2563,10 @@
   function bindForegroundResume() {
     if (bindForegroundResume.bound) return;
     bindForegroundResume.bound = true;
-    const onWake = () => scheduleRecoverOnForeground();
+    const onWake = () => {
+      scheduleRecoverOnForeground();
+      if (state.setupReady) void checkForAppUpdate();
+    };
     document.addEventListener("visibilitychange", onWake);
     window.addEventListener("pageshow", onWake);
     window.addEventListener("online", onWake);
@@ -3579,6 +3594,21 @@
     if (e.target === els.modalBackdrop) els.modalBackdrop.classList.add("hidden");
   });
 
+  if (els.btnUpdate) {
+    els.btnUpdate.addEventListener("click", () => openUpdateModal());
+  }
+  if (els.updateCancel) {
+    els.updateCancel.addEventListener("click", () => closeUpdateModal());
+  }
+  if (els.updateConfirm) {
+    els.updateConfirm.addEventListener("click", () => applyAppUpdateFromUi());
+  }
+  if (els.updateBackdrop) {
+    els.updateBackdrop.addEventListener("click", (e) => {
+      if (e.target === els.updateBackdrop && !state.updateApplying) closeUpdateModal();
+    });
+  }
+
   const btnCopy = document.getElementById("btn-copy-url");
   if (btnCopy) {
     btnCopy.addEventListener("click", async () => {
@@ -4267,6 +4297,144 @@
       state.usageTimer = setInterval(() => {
         if (state.setupReady) refreshUsage();
       }, 90000);
+    }
+    startUpdatePolling();
+  }
+
+  const UPDATE_POLL_MS = 30 * 60 * 1000;
+
+  function updateSummaryText(info) {
+    if (!info) return "";
+    if (info.summary) return info.summary;
+    if (info.latest && info.latest.subject) return info.latest.subject;
+    return "New commits are waiting on GitHub.";
+  }
+
+  function renderUpdateButton(info) {
+    state.appUpdate = info || null;
+    if (!els.btnUpdate) return;
+    const show = !!(info && info.available && !info.applying);
+    els.btnUpdate.classList.toggle("hidden", !show);
+    if (show && info.behind > 1) {
+      els.btnUpdate.textContent = `Update available (${info.behind})`;
+    } else if (show) {
+      els.btnUpdate.textContent = "Update available";
+    }
+  }
+
+  async function checkForAppUpdate({ force = false } = {}) {
+    const now = Date.now();
+    if (
+      !force &&
+      state.lastUpdateCheckAt &&
+      now - state.lastUpdateCheckAt < UPDATE_POLL_MS
+    ) {
+      return state.appUpdate;
+    }
+    try {
+      const info = await api("/api/update");
+      state.lastUpdateCheckAt = Date.now();
+      renderUpdateButton(info);
+      return info;
+    } catch {
+      renderUpdateButton(null);
+      return null;
+    }
+  }
+
+  function startUpdatePolling() {
+    void checkForAppUpdate();
+    if (!state.updateTimer) {
+      state.updateTimer = setInterval(() => {
+        if (state.setupReady) void checkForAppUpdate();
+      }, UPDATE_POLL_MS);
+    }
+  }
+
+  function setUpdateProgress(text) {
+    if (!els.updateProgress) return;
+    if (!text) {
+      els.updateProgress.classList.add("hidden");
+      els.updateProgress.textContent = "";
+      return;
+    }
+    els.updateProgress.classList.remove("hidden");
+    els.updateProgress.textContent = text;
+  }
+
+  function openUpdateModal() {
+    const info = state.appUpdate;
+    if (!info || !info.available || !els.updateBackdrop) return;
+    if (els.updateCommit) els.updateCommit.textContent = updateSummaryText(info);
+    if (els.updateTitle) {
+      els.updateTitle.textContent =
+        info.behind > 1 ? `Update available (${info.behind} commits)` : "Update available";
+    }
+    if (els.updateNote) {
+      els.updateNote.textContent = state.running
+        ? "This pulls the latest code, installs dependencies if needed, and restarts Grok Desktop. The chat that is running now will stop."
+        : "This pulls the latest code, installs dependencies if needed, and restarts Grok Desktop. In-progress chats will stop.";
+    }
+    setUpdateProgress("");
+    state.updateApplying = false;
+    if (els.updateConfirm) {
+      els.updateConfirm.disabled = false;
+      els.updateConfirm.textContent = "Update and restart";
+    }
+    if (els.updateCancel) els.updateCancel.disabled = false;
+    els.updateBackdrop.classList.remove("hidden");
+  }
+
+  function closeUpdateModal() {
+    if (state.updateApplying) return;
+    if (els.updateBackdrop) els.updateBackdrop.classList.add("hidden");
+  }
+
+  async function applyAppUpdateFromUi() {
+    if (state.updateApplying) return;
+    state.updateApplying = true;
+    if (els.updateConfirm) {
+      els.updateConfirm.disabled = true;
+      els.updateConfirm.textContent = "Updating…";
+    }
+    if (els.updateCancel) els.updateCancel.disabled = true;
+    setUpdateProgress("Pulling the latest code from GitHub…");
+    try {
+      const result = await api("/api/update", {
+        method: "POST",
+        body: "{}",
+      });
+      if (result.alreadyCurrent) {
+        setUpdateProgress("Already up to date.");
+        renderUpdateButton({ ...result, available: false });
+        state.updateApplying = false;
+        if (els.updateCancel) els.updateCancel.disabled = false;
+        return;
+      }
+      if (result.restarting) {
+        setUpdateProgress(
+          "Restarting Grok Desktop on this PC. If you’re on a phone, wait a few seconds then reload."
+        );
+        renderUpdateButton(null);
+        return;
+      }
+      setUpdateProgress(
+        "Code updated. Quit Grok Desktop and relaunch it (or restart the server) to load the new files."
+      );
+      renderUpdateButton({ ...result, available: false });
+      state.updateApplying = false;
+      if (els.updateCancel) {
+        els.updateCancel.disabled = false;
+        els.updateCancel.textContent = "Close";
+      }
+    } catch (err) {
+      setUpdateProgress(err.message || "Update failed.");
+      state.updateApplying = false;
+      if (els.updateConfirm) {
+        els.updateConfirm.disabled = false;
+        els.updateConfirm.textContent = "Try again";
+      }
+      if (els.updateCancel) els.updateCancel.disabled = false;
     }
   }
 

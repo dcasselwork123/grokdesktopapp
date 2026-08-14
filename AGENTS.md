@@ -71,6 +71,22 @@ IPC: `electron/main.js` → `pick-folder`; `electron/preload.js` → `grokDeskto
 
 Other TUI slash commands (`/compact`, `/theme`, …) are **not** implemented in the desktop app; they would only be sent as plain text if typed.
 
+### In-app updates (GitHub)
+
+If this folder is a git checkout of the app, the sidebar footer can show **Update available** under the account/status row when `origin/main` is ahead.
+
+| | |
+|--|--|
+| **Check** | `GET /api/update` — `git fetch origin` at most every **30 minutes** (startup + interval + window focus all share that cap) |
+| **Confirm** | Button opens a modal with the incoming commit subject(s) |
+| **Apply** | `POST /api/update` — `git pull --ff-only`, `npm install` only if `package.json` / lockfile changed, then Electron `app.relaunch()` |
+| **Hidden when** | Not a git checkout, git missing, already current, or local branch has diverged / is ahead |
+| **Phone** | Same button; pull/restart run on the **PC**. Reload Safari after the desktop window comes back |
+
+Do not force-push, reset, or stash local work. If the fast-forward is blocked, show git’s error.
+
+Server: `server/appUpdate.js`. Restart hook: `electron/main.js` → `onAppRestart`.
+
 ### Remote (phone)
 
 - Same `renderer/` as desktop. Auth: loopback open; remote needs `?token=` (cookie for CSS/JS).
@@ -177,6 +193,7 @@ GrokDesktop/
 │   ├── index.js            ← standalone server entry (no Electron)
 │   ├── httpApi.js          ← REST + SSE chat + static UI + token/cookie auth + /api/setup + /api/auth/login
 │   ├── grokService.js      ← sessions, models, spawn grok -p, image save, setup/auth/login
+│   ├── appUpdate.js        ← git fetch (30 min) + pull / npm install / restart
 │   └── remoteAccess.js     ← config, token, Tailscale IP, phone URL
 │
 └── renderer/               ← same UI for desktop window + phone browser
@@ -212,6 +229,7 @@ UI (Electron or Safari)
 | Mobile new-session projects | `renderer/app.js`, `renderer/index.html` (folder-picker modal) |
 | Tailscale / token / bind | `server/remoteAccess.js`, `electron/main.js`, `server/httpApi.js` |
 | Launch / window startup | `electron/main.js`, `Start Grok Desktop.*` |
+| **In-app GitHub update** | `server/appUpdate.js`, `server/httpApi.js`, `electron/main.js`, `renderer/app.js` + `index.html` + `styles.css` |
 | First-time deps | `package.json` only if needed; prefer existing electron install |
 
 ---

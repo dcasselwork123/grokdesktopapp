@@ -66,6 +66,7 @@ Then open http://127.0.0.1:3847. The setup gate is the same.
 | **Folder** | Desktop: native folder dialog. Phone: pick a project from existing sessions |
 | **Stop** | Cancel an in-flight run |
 | **Phone** | Same UI in Safari; reconnects if iOS drops the stream |
+| **Updates** | **Update available** in the sidebar when GitHub has a new commit. Confirm, then the app pulls and restarts (checks at most every 30 minutes) |
 
 ## Use from iPhone
 

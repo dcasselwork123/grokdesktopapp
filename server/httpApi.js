@@ -21,6 +21,7 @@ const {
   getUsageSnapshot,
 } = require("./grokService");
 const { buildRemoteInfo } = require("./remoteAccess");
+const { getUpdateStatus, applyAppUpdate } = require("./appUpdate");
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -383,7 +384,13 @@ function resolveStaticFile(staticDir, pathname) {
   return filePath;
 }
 
-function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null }) {
+function createServer({
+  port = 3847,
+  host = "127.0.0.1",
+  staticDir,
+  token = null,
+  onAppRestart = null,
+} = {}) {
   const activeRuns = new Map();
   let boundPort = port;
   let boundHost = host;
@@ -509,6 +516,47 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
             res,
             status,
             { error: err.message || String(err), code: err.code || null },
+            extraHeaders
+          );
+        }
+        return;
+      }
+
+      if (pathname === "/api/update" && req.method === "GET") {
+        const force = parsed.searchParams.get("refresh") === "1";
+        const status = await getUpdateStatus({ force });
+        sendJson(res, 200, status, extraHeaders);
+        return;
+      }
+
+      if (pathname === "/api/update" && req.method === "POST") {
+        try {
+          const result = await applyAppUpdate();
+          const restarting =
+            !!result.pulled && typeof onAppRestart === "function";
+          sendJson(
+            res,
+            200,
+            { ...result, restarting },
+            extraHeaders
+          );
+          if (restarting) {
+            setTimeout(() => {
+              try {
+                onAppRestart();
+              } catch (err) {
+                console.error("[httpApi] onAppRestart failed:", err);
+              }
+            }, 700);
+          }
+        } catch (err) {
+          sendJson(
+            res,
+            500,
+            {
+              error: err.message || String(err),
+              code: err.code || null,
+            },
             extraHeaders
           );
         }

@@ -56,47 +56,50 @@
       <div id="session-list" class="session-list" role="list"></div>
 
       <div class="sidebar-footer">
-        <div class="account-wrap">
-          <button
-            type="button"
-            id="btn-account"
-            class="account-bubble unsigned"
-            title="Account"
-            aria-label="Account"
-            aria-haspopup="menu"
-            aria-expanded="false"
-            aria-controls="account-popover"
-          >
-            <span id="account-initials">?</span>
-          </button>
-          <div id="account-popover" class="account-popover hidden" role="menu" aria-hidden="true">
-            <div class="account-pop-head">
-              <div class="account-pop-avatar" id="account-pop-avatar" aria-hidden="true">?</div>
-              <div class="account-pop-meta">
-                <div id="account-pop-name" class="account-pop-name">Not signed in</div>
-                <div id="account-pop-email" class="account-pop-email"></div>
+        <div class="sidebar-footer-row">
+          <div class="account-wrap">
+            <button
+              type="button"
+              id="btn-account"
+              class="account-bubble unsigned"
+              title="Account"
+              aria-label="Account"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              aria-controls="account-popover"
+            >
+              <span id="account-initials">?</span>
+            </button>
+            <div id="account-popover" class="account-popover hidden" role="menu" aria-hidden="true">
+              <div class="account-pop-head">
+                <div class="account-pop-avatar" id="account-pop-avatar" aria-hidden="true">?</div>
+                <div class="account-pop-meta">
+                  <div id="account-pop-name" class="account-pop-name">Not signed in</div>
+                  <div id="account-pop-email" class="account-pop-email"></div>
+                </div>
               </div>
+              <div class="account-pop-actions">
+                <button type="button" id="btn-account-login-x" class="account-pop-item" role="menuitem">
+                  Sign in with X
+                </button>
+                <button type="button" id="btn-account-login-email" class="account-pop-item" role="menuitem">
+                  Sign in with email
+                </button>
+                <div class="context-menu-sep" role="separator"></div>
+                <button type="button" id="btn-account-logout" class="account-pop-item danger" role="menuitem">
+                  Log out
+                </button>
+              </div>
+              <p id="account-pop-hint" class="account-pop-hint"></p>
             </div>
-            <div class="account-pop-actions">
-              <button type="button" id="btn-account-login-x" class="account-pop-item" role="menuitem">
-                Sign in with X
-              </button>
-              <button type="button" id="btn-account-login-email" class="account-pop-item" role="menuitem">
-                Sign in with email
-              </button>
-              <div class="context-menu-sep" role="separator"></div>
-              <button type="button" id="btn-account-logout" class="account-pop-item danger" role="menuitem">
-                Log out
-              </button>
-            </div>
-            <p id="account-pop-hint" class="account-pop-hint"></p>
           </div>
+          <div class="status-pill" id="status-pill" title="Backend status">
+            <span class="dot" id="status-dot"></span>
+            <span id="status-text">Connecting…</span>
+          </div>
+          <button id="btn-remote-info" class="icon-btn" title="Remote access (iPhone)">📱</button>
         </div>
-        <div class="status-pill" id="status-pill" title="Backend status">
-          <span class="dot" id="status-dot"></span>
-          <span id="status-text">Connecting…</span>
-        </div>
-        <button id="btn-remote-info" class="icon-btn" title="Remote access (iPhone)">📱</button>
+        <button type="button" id="btn-update" class="btn-update hidden">Update available</button>
       </div>
     </aside>
 
@@ -276,6 +279,23 @@
         <p class="muted">If it won’t connect: open the Tailscale app on this PC (status showed “stopped” before), allow Windows Firewall for Node/Electron on private networks, then reopen this dialog.</p>
       </div>
       <button id="modal-close" class="btn-primary">Got it</button>
+    </div>
+  </div>
+
+  <!-- App update confirm -->
+  <div id="update-backdrop" class="modal-backdrop hidden">
+    <div class="modal update-modal" role="dialog" aria-labelledby="update-title">
+      <h2 id="update-title">Update available</h2>
+      <div class="modal-body">
+        <p>A newer version is on GitHub:</p>
+        <pre id="update-commit">…</pre>
+        <p class="muted" id="update-note">This pulls the latest code, installs dependencies if needed, and restarts Grok Desktop. In-progress chats will stop.</p>
+        <p id="update-progress" class="update-progress hidden" role="status"></p>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="update-cancel" class="btn-secondary">Not now</button>
+        <button type="button" id="update-confirm" class="btn-primary">Update and restart</button>
+      </div>
     </div>
   </div>
 

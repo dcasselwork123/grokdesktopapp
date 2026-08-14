@@ -621,9 +621,61 @@ body.select-mode .session-item .check {
   border-top: 1px solid var(--border-soft);
   padding: 10px 12px;
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.sidebar-footer-row {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
+}
+
+.btn-update {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+  text-align: center;
+}
+
+.btn-update:hover,
+.btn-update:focus-visible {
+  filter: brightness(1.08);
+  outline: none;
+}
+
+.btn-update:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.update-progress {
+  margin: 8px 0 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.update-modal .modal-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.update-modal .modal-actions .btn-primary,
+.update-modal .modal-actions .btn-secondary {
+  margin: 0;
+  width: auto;
+  flex: 1;
 }
 
 .account-wrap {
