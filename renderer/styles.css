@@ -2287,6 +2287,10 @@ body.select-mode .session-item .check {
   line-height: 1.45;
 }
 
+#btn-rotate-token {
+  margin-top: 10px;
+}
+
 /* ---------- Scrim when mobile drawer open ---------- */
 .sidebar-scrim {
   display: none;

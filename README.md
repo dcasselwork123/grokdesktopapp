@@ -63,21 +63,27 @@ Then open http://127.0.0.1:3847. The setup gate is the same.
 | **Images** | **+**, paste, or drag-and-drop (max 8). Re-encoded to JPEG on the client |
 | **Model / Effort** | Composer selectors, including a custom model picker |
 | **Usage** | Weekly usage pie in the composer; click for session context |
-| **Folder** | Desktop: native folder dialog. Phone: pick a project from existing sessions |
+| **Folder** | Desktop: native folder dialog. Phone: known project folders or the last desktop folder (not a free-form `C:\` path) |
 | **Stop** | Cancel an in-flight run |
 | **Phone** | Same UI in Safari; reconnects if iOS drops the stream |
 | **Updates** | **Update available** in the sidebar when GitHub has a new commit. Confirm, then the app pulls and restarts (checks at most every 30 minutes) |
 
 ## Use from iPhone
 
-Keep Grok Desktop running on the PC. On the PC, click **📱** in the sidebar footer and **Copy phone URL**. That link includes the access token.
+Keep Grok Desktop running on the PC. On the PC, click **📱** in the sidebar footer and **Copy phone URL**.
 
 1. Install [Tailscale](https://tailscale.com/download) on the PC and iPhone; sign into the same account.
-2. On the phone, open the copied URL in Safari (`http://100.x.y.z:3847/?token=…`).
+2. On the phone, open the copied URL in Safari. The `?token=` query is a **one-time bootstrap**; the server then sets an **HttpOnly SameSite=Strict cookie**. The address bar is cleaned; the token is **not** stored in localStorage. Later API fetches do **not** put the token in the query string.
 
 Default bind is **loopback + Tailscale** (`127.0.0.1` and the PC’s `100.x` address), not all interfaces. A random token is stored in `~/.grok-desktop/config.json`. You do not need to set env vars for the usual case.
 
-Loopback (`127.0.0.1`) does not need a token. Anything remote does — after the first `?token=` load, a cookie keeps CSS/JS working.
+Loopback (`127.0.0.1`) does not need a token. Anything remote does — after that first `?token=` load, the cookie keeps CSS/JS and API calls working.
+
+`GET /api/health` does **not** return the raw token. `GET /api/remote` returns the copyable phone URL **only on loopback** (the PC window).
+
+**Rotate phone access** in the 📱 modal mints a new token. Existing phone tabs will need the new URL.
+
+On the phone, chat cwd is a **known project folder** from existing sessions or the **last folder chosen on the desktop** — not a free-form `C:\` path.
 
 The phone **cannot** apply in-app updates or start Grok sign-in (OAuth). Do those on the PC, then reload Safari (or tap Recheck on the setup gate).
 
@@ -94,7 +100,7 @@ Defaults live in `~/.grok-desktop/config.json`. Env vars override the file.
 | `GROK_DESKTOP_PORT` | `3847` | HTTP port |
 | `GROK_DESKTOP_HOST` | loopback + Tailscale | Bind address. Set `0.0.0.0` only to force all-interfaces (same as Allow LAN) |
 | `GROK_DESKTOP_ALLOW_LAN` | off | `1` / `true` listens on the LAN as well (cafe/public Wi‑Fi can then reach the app) |
-| `GROK_DESKTOP_TOKEN` | auto-generated | Required as `?token=` or `X-Grok-Token` for non-loopback |
+| `GROK_DESKTOP_TOKEN` | auto-generated | Phone-access token. Safari bootstrap uses a one-time `?token=` URL, then an HttpOnly SameSite=Strict cookie. API fetches do not put it in the query string. |
 | `GROK_BIN` | auto | Path to `grok` / `grok.exe` |
 | `GROK_HOME` | `~/.grok` | Grok config/sessions root |
 
@@ -145,7 +151,8 @@ Confirm you’re signed in (account bubble in the sidebar). In a terminal: `grok
 
 **Phone can’t connect**
 - App must be running on the PC
-- Use the **📱 Copy phone URL** link (includes `?token=`)
+- Use the **📱 Copy phone URL** link (one-time `?token=` bootstrap, then cookie)
+- If you rotated phone access, copy the **new** URL; old phone tabs will fail until they load it
 - Use the Tailscale IP, not `127.0.0.1`, on the phone (or a LAN IP only if you enabled **Allow LAN**)
 - Windows Firewall may prompt on first bind — allow **Private / Tailscale**, not Public
 

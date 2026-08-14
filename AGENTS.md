@@ -48,7 +48,7 @@ No Artifacts / Routines / Customize chrome. Sessions are real Grok sessions (sha
 | **Desktop (Electron)** | **Folder** uses the native Windows/macOS directory dialog (`dialog.showOpenDialog` via IPC `pick-folder`). Path is read-only in the UI; click path or folder icon to browse. |
 | **Browser / `npm run server`** | Free-text path still works (no Electron dialog). |
 | **Changing folder** | If the path differs from the open session’s cwd, the app starts a **new draft chat** in that folder (does not resume the old session). |
-| **Mobile** | Folder field is hidden in the composer. On **+ New**, a sheet lists **unique project folders** from existing sessions (cannot pick arbitrary Windows paths from the phone). |
+| **Mobile** | Folder field is hidden in the composer. On **+ New**, a sheet lists **unique project folders** from existing sessions, or the last folder chosen on the desktop (cannot pick an arbitrary `C:\` path from the phone). |
 
 IPC: `electron/main.js` → `pick-folder`; `electron/preload.js` → `grokDesktop.pickFolder()`.
 
@@ -95,10 +95,12 @@ Server: `server/appUpdate.js`. Restart hook: `electron/main.js` → `onAppRestar
 
 ### Remote (phone)
 
-- Same `renderer/` as desktop. Auth: loopback open; remote needs `?token=` (cookie for CSS/JS).
+- Same `renderer/` as desktop. Auth: loopback open. Remote: `?token=` is a **one-time Safari bootstrap**; the server sets an **HttpOnly SameSite=Strict cookie**. The client strips the query from the address bar and does **not** store the token in localStorage. API fetches do **not** put the token in the query string (cookie only).
+- `GET /api/health` does **not** return the raw token. `GET /api/remote` returns the copyable phone URL **only on loopback**.
+- 📱 **Rotate phone access** (PC modal) mints a new token; existing phone tabs need the new URL.
 - Default bind is `127.0.0.1` plus the Tailscale `100.x` address — **not** `0.0.0.0`. LAN is opt-in via 📱 **Allow LAN (trusted network)** (or `GROK_DESKTOP_ALLOW_LAN=1` / `GROK_DESKTOP_HOST=0.0.0.0`).
 - Phone cannot `POST /api/update` or start/cancel OAuth (`POST /api/auth/login`). Finish sign-in and apply updates on the PC, then reload Safari / Recheck.
-- Mobile: model/effort in composer; folder via **New → project picker**; images via phone file picker / photos.
+- Mobile: model/effort in composer; folder via **New → project picker** (known project folders or last desktop folder — not a free-form `C:\` path); images via phone file picker / photos.
 
 ### Startup setup gate (CLI install + Grok sign-in)
 
@@ -133,7 +135,7 @@ Related endpoints:
 | Method | Path | Role |
 |--------|------|------|
 | `GET` | `/api/setup` | Full readiness: `ready`, `installed`, `grokBin`, `auth`, `login`, `install` commands |
-| `GET` | `/api/health` | Includes `ready`, `installed`, `authenticated`, `authEmail` (plus remote info) |
+| `GET` | `/api/health` | Includes `ready`, `installed`, `authenticated`, `authEmail` (plus remote info). Does **not** return the raw phone token. |
 | `POST` | `/api/auth/login` | Start `grok login --oauth` |
 | `GET` | `/api/auth/login` | Login process status (`running`, exit code, log tail) |
 | `POST` | `/api/auth/login/cancel` | Stop in-flight login |
@@ -167,7 +169,7 @@ npm.cmd run server       # node server/index.js → http://127.0.0.1:3847
 
 **Requirements:** Node 18+. Grok CLI + sign-in are checked at startup (see **Startup setup gate** above). Fresh clones: user installs CLI and/or clicks **Sign in with Grok** — no shared account secrets in the repo.
 
-**Config / remote:** `~/.grok-desktop/config.json` (token, host, port, `allowLan`). Default bind is `127.0.0.1` + Tailscale `100.x` (not `0.0.0.0`). Phone URL = PC Tailscale IP + port + `?token=…` (📱 copies it when Tailscale is up; no LAN fallback unless Allow LAN is on). Auth: loopback open; remote needs token (cookie set after first `?token=` load so CSS/JS work).
+**Config / remote:** `~/.grok-desktop/config.json` (token, host, port, `allowLan`, last desktop cwd). Default bind is `127.0.0.1` + Tailscale `100.x` (not `0.0.0.0`). Phone URL = PC Tailscale IP + port + `?token=…` (📱 copies it when Tailscale is up; no LAN fallback unless Allow LAN is on). Auth: loopback open; remote `?token=` is a one-time Safari bootstrap, then an HttpOnly SameSite=Strict cookie. API fetches do not put the token in the query string and do not keep it in localStorage.
 
 **Local data (user machine, not in repo):**
 
@@ -248,7 +250,7 @@ UI (Electron or Safari)
 1. **Read this file first** on fresh sessions about this app.
 2. Keep the stack simple: Electron shell + Node HTTP + vanilla renderer (no React rewrite unless asked).
 3. Preserve double-click launchers; don’t force the user into raw npm for daily use.
-4. Mobile and desktop share `renderer/` — fix auth/CSS so remote assets work (token cookie).
+4. Mobile and desktop share `renderer/` — fix auth/CSS so remote assets work (HttpOnly cookie after the one-time `?token=` bootstrap).
 5. Don’t commit secrets; desktop token lives in `~/.grok-desktop/config.json`; **never** commit `~/.grok/auth.json` or API keys.
 6. **Images:** save to disk + pass paths via `-p` (vision through tools). Avoid large `--prompt-json` base64 on Windows/Electron.
 7. **Folder change = new chat** when cwd differs from the active session — don’t silently resume the old session in a new directory.

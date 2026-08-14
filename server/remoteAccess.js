@@ -31,6 +31,33 @@ function saveConfig(cfg) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), "utf8");
 }
 
+/** Absolute path for lastCwd, or null to clear. Directory need not exist. */
+function normalizeStoredCwd(cwd) {
+  if (cwd == null) return null;
+  const s = String(cwd).trim();
+  if (!s) return null;
+  return path.resolve(s);
+}
+
+function getLastCwd() {
+  const stored = loadConfig();
+  if (typeof stored.lastCwd !== "string") return null;
+  const s = stored.lastCwd.trim();
+  return s || null;
+}
+
+function setLastCwd(cwd) {
+  const stored = loadConfig();
+  const next = normalizeStoredCwd(cwd);
+  if (next == null) {
+    delete stored.lastCwd;
+  } else {
+    stored.lastCwd = next;
+  }
+  saveConfig(stored);
+  return next;
+}
+
 function isAllInterfacesHost(host) {
   return host === "0.0.0.0" || host === "::";
 }
@@ -392,6 +419,84 @@ function buildRemoteInfo({ port, token, host, allowLan, tailscaleIp, lanIpv4 } =
   };
 }
 
+function valueContainsToken(value, token) {
+  if (!token) return false;
+  if (typeof value === "string") return value.includes(token);
+  try {
+    return JSON.stringify(value).includes(token);
+  } catch {
+    return true;
+  }
+}
+
+/** Redacted remote info for non-loopback clients. Never includes token or tokenized URLs. */
+function toPublicRemoteInfo(info) {
+  const src = info && typeof info === "object" ? info : {};
+  const token = src.token;
+  const out = {
+    host: src.host,
+    port: src.port,
+    tailscaleIp: src.tailscaleIp,
+    allowLan: src.allowLan,
+    bindNote: src.bindNote,
+    hasToken: Boolean(token),
+    canCopyPhoneUrl: false,
+    phoneUrl: null,
+  };
+
+  for (const key of Object.keys(src)) {
+    if (
+      key === "token" ||
+      key === "phoneUrl" ||
+      key === "canCopyPhoneUrl" ||
+      key === "hasToken" ||
+      key === "host" ||
+      key === "port" ||
+      key === "tailscaleIp" ||
+      key === "allowLan" ||
+      key === "bindNote"
+    ) {
+      continue;
+    }
+    const value = src[key];
+    if (key === "localUrl" && typeof value === "string" && value.includes("?token=")) {
+      continue;
+    }
+    if (valueContainsToken(value, token)) continue;
+    out[key] = value;
+  }
+
+  return out;
+}
+
+/** Full Phase-1 remote object for the PC 📱 modal. */
+function toLoopbackRemoteInfo(info) {
+  const src = info && typeof info === "object" ? info : {};
+  return {
+    ...toPublicRemoteInfo(src),
+    token: src.token,
+    phoneUrl: src.phoneUrl == null ? null : src.phoneUrl,
+    canCopyPhoneUrl: src.canCopyPhoneUrl,
+    localUrl: src.localUrl,
+  };
+}
+
+function rotateToken() {
+  const stored = loadConfig();
+  const token = randomBytes(18).toString("base64url");
+  stored.token = token;
+  saveConfig(stored);
+  const settings = resolveAccessSettings();
+  return toLoopbackRemoteInfo(
+    buildRemoteInfo({
+      host: settings.host,
+      port: settings.port,
+      token,
+      allowLan: settings.allowLan,
+    })
+  );
+}
+
 module.exports = {
   resolveAccessSettings,
   detectTailscaleIpSync,
@@ -409,4 +514,10 @@ module.exports = {
   getListenPlan,
   setAllowLan,
   ensureAccessConfig,
+  rotateToken,
+  toPublicRemoteInfo,
+  toLoopbackRemoteInfo,
+  getLastCwd,
+  setLastCwd,
+  normalizeStoredCwd,
 };

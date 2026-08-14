@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("assert");
+const path = require("path");
 const {
   normalizeRemoteAddress,
   isLoopbackAddress,
@@ -9,6 +10,9 @@ const {
   isAllowedPeer,
   getListenPlan,
   buildRemoteInfo,
+  toPublicRemoteInfo,
+  toLoopbackRemoteInfo,
+  normalizeStoredCwd,
 } = require("./remoteAccess");
 
 let failed = 0;
@@ -168,6 +172,69 @@ test("getListenPlan without allowLan keeps a Tailscale IPv4", () => {
   assert.strictEqual(plan.tailscale, "100.64.1.2");
   assert.strictEqual(plan.allInterfaces, false);
   assert.strictEqual(plan.loopback, "127.0.0.1");
+});
+
+const sampleRemote = {
+  token: "secret",
+  phoneUrl: "http://100.1.2.3:3847/?token=secret",
+  host: "127.0.0.1",
+  port: 3847,
+  tailscaleIp: "100.1.2.3",
+  allowLan: false,
+  bindNote: "Reachable over Tailscale while this app is open.",
+  canCopyPhoneUrl: true,
+  localUrl: "http://127.0.0.1:3847/?token=secret",
+  phoneApps: {
+    required: "Nothing extra — use Safari (or Chrome) on your iPhone.",
+  },
+};
+
+test("toPublicRemoteInfo strips token and tokenized URLs", () => {
+  const pub = toPublicRemoteInfo(sampleRemote);
+  assert.strictEqual("token" in pub, false);
+  assert.strictEqual(pub.phoneUrl, null);
+  assert.strictEqual(pub.hasToken, true);
+  assert.strictEqual(pub.canCopyPhoneUrl, false);
+  assert.strictEqual("localUrl" in pub, false);
+  assert.strictEqual(pub.host, "127.0.0.1");
+  assert.strictEqual(pub.port, 3847);
+  assert.strictEqual(pub.tailscaleIp, "100.1.2.3");
+  assert.strictEqual(pub.allowLan, false);
+  assert.strictEqual(pub.bindNote, sampleRemote.bindNote);
+  assert.deepStrictEqual(pub.phoneApps, sampleRemote.phoneApps);
+  assert.ok(!JSON.stringify(pub).includes("secret"));
+});
+
+test("toLoopbackRemoteInfo keeps token and phoneUrl", () => {
+  const loop = toLoopbackRemoteInfo(sampleRemote);
+  assert.strictEqual(loop.token, "secret");
+  assert.strictEqual(loop.phoneUrl, "http://100.1.2.3:3847/?token=secret");
+  assert.strictEqual(loop.canCopyPhoneUrl, true);
+  assert.strictEqual(loop.localUrl, "http://127.0.0.1:3847/?token=secret");
+  assert.strictEqual(loop.hasToken, true);
+  assert.strictEqual(loop.host, "127.0.0.1");
+});
+
+test("toPublicRemoteInfo keeps localUrl when it has no token query", () => {
+  const pub = toPublicRemoteInfo({
+    host: "127.0.0.1",
+    port: 3847,
+    token: "secret",
+    localUrl: "http://127.0.0.1:3847",
+  });
+  assert.strictEqual(pub.localUrl, "http://127.0.0.1:3847");
+  assert.ok(!JSON.stringify(pub).includes("secret"));
+});
+
+test("normalizeStoredCwd resolves paths and clears empty", () => {
+  assert.strictEqual(normalizeStoredCwd(null), null);
+  assert.strictEqual(normalizeStoredCwd(undefined), null);
+  assert.strictEqual(normalizeStoredCwd(""), null);
+  assert.strictEqual(normalizeStoredCwd("   "), null);
+  const abs = normalizeStoredCwd("my-folder");
+  assert.ok(path.isAbsolute(abs));
+  assert.strictEqual(abs, path.resolve("my-folder"));
+  assert.strictEqual(normalizeStoredCwd("C:\\Dev\\GrokDesktop"), path.resolve("C:\\Dev\\GrokDesktop"));
 });
 
 if (failed) {

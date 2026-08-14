@@ -30,9 +30,21 @@ const {
   setAllowLan,
   detectTailscaleIpSync,
   getLanIpv4,
+  rotateToken,
+  toPublicRemoteInfo,
+  toLoopbackRemoteInfo,
+  getLastCwd,
+  setLastCwd,
 } = require("./remoteAccess");
 const { isSafeSessionId } = require("./sessionId");
 const { getUpdateStatus, applyAppUpdate } = require("./appUpdate");
+const { tokensEqual, cookieHeader, presentedToken } = require("./authToken");
+const {
+  assertRemoteCwd,
+  assertModelEffort,
+  listKnownProjectFolders,
+  createChatRateLimiter,
+} = require("./chatPolicy");
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -45,14 +57,11 @@ const MIME = {
   ".webmanifest": "application/manifest+json",
 };
 
-const COOKIE_NAME = "grok_desktop_token";
-
 function sendJson(res, status, body, extraHeaders = {}) {
   const data = JSON.stringify(body);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
-    "Access-Control-Allow-Origin": "*",
     ...extraHeaders,
   });
   res.end(data);
@@ -84,30 +93,6 @@ function readBody(req, { maxBytes = 2 * 1024 * 1024 } = {}) {
   });
 }
 
-function parseCookies(req) {
-  const header = req.headers.cookie || "";
-  const out = {};
-  for (const part of header.split(";")) {
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq < 0) continue;
-    const k = trimmed.slice(0, eq).trim();
-    const v = trimmed.slice(eq + 1).trim();
-    try {
-      out[k] = decodeURIComponent(v);
-    } catch {
-      out[k] = v;
-    }
-  }
-  return out;
-}
-
-function cookieHeader(token) {
-  // Not HttpOnly so the SPA can also read it if needed; Path=/ covers CSS/JS.
-  return `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; SameSite=Lax; Max-Age=31536000`;
-}
-
 function serveStatic(res, filePath, extraHeaders = {}) {
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
     res.writeHead(404, { "Content-Type": "text/plain", ...extraHeaders });
@@ -129,6 +114,8 @@ const PRIVILEGED_POST_PATHS = new Set([
   "/api/auth/login/cancel",
   "/api/auth/logout",
   "/api/remote/settings",
+  "/api/remote/rotate",
+  "/api/sessions/bulk",
 ]);
 
 const LOOPBACK_ONLY_BODY = {
@@ -241,7 +228,6 @@ function writeSseHeaders(res, extraHeaders = {}) {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
-    "Access-Control-Allow-Origin": "*",
     "X-Accel-Buffering": "no",
     ...extraHeaders,
   });
@@ -462,6 +448,9 @@ async function createServer({
   const activeRuns = new Map();
   if (staticDir) staticDir = path.resolve(staticDir);
 
+  let currentToken = token;
+  const chatRateLimiter = createChatRateLimiter();
+
   let boundPort = port;
   let boundHost = "127.0.0.1";
   let currentAllowLan =
@@ -495,7 +484,7 @@ async function createServer({
     boundHost = plan.allInterfaces ? "0.0.0.0" : "127.0.0.1";
     return buildRemoteInfo({
       port: boundPort,
-      token,
+      token: currentToken,
       host: boundHost,
       allowLan: currentAllowLan,
       tailscaleIp: currentTailscaleIp,
@@ -636,36 +625,21 @@ async function createServer({
   }
 
   async function handleRequest(req, res) {
-    if (req.method === "OPTIONS") {
-      res.writeHead(204, {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Grok-Token",
-        "Access-Control-Allow-Credentials": "true",
-      });
-      res.end();
-      return;
-    }
-
     const parsed = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     const pathname = parsed.pathname || "/";
-    const cookies = parseCookies(req);
+    const presented = presentedToken(req, parsed);
     const queryToken = parsed.searchParams.get("token");
-    const headerToken =
-      req.headers["x-grok-token"] ||
-      (req.headers.authorization || "").replace(/^Bearer\s+/i, "") ||
-      "";
-    const presented =
-      queryToken || headerToken || cookies[COOKIE_NAME] || null;
 
     const extraHeaders = {};
-    // If they brought a valid token in the URL/header, mint a cookie so /styles.css & /app.js work.
-    if (token && presented === token && queryToken === token) {
-      extraHeaders["Set-Cookie"] = cookieHeader(token);
+    // One-time Safari bootstrap: mint HttpOnly cookie when the query token matches.
+    if (currentToken && tokensEqual(queryToken, currentToken)) {
+      extraHeaders["Set-Cookie"] = cookieHeader(currentToken);
     }
 
     const authorized =
-      !token || isLoopbackRequest(req) || presented === token;
+      !currentToken ||
+      isLoopbackRequest(req) ||
+      tokensEqual(presented, currentToken);
 
     if (!authorized) {
       if (wantsHtml(req, pathname) && req.method === "GET") {
@@ -696,7 +670,7 @@ async function createServer({
           {
             ok: true,
             ...getStatus(),
-            remote: currentRemoteInfo(),
+            remote: toPublicRemoteInfo(currentRemoteInfo()),
           },
           extraHeaders
         );
@@ -808,7 +782,15 @@ async function createServer({
       }
 
       if (pathname === "/api/remote" && req.method === "GET") {
-        sendJson(res, 200, await rebind(), extraHeaders);
+        const info = await rebind();
+        sendJson(
+          res,
+          200,
+          isLoopbackRequest(req)
+            ? toLoopbackRemoteInfo(info)
+            : toPublicRemoteInfo(info),
+          extraHeaders
+        );
         return;
       }
 
@@ -820,8 +802,22 @@ async function createServer({
           sendJson(res, 400, { error: err.message || "Invalid JSON body" }, extraHeaders);
           return;
         }
-        setAllowLan(!!body.allowLan);
-        sendJson(res, 200, await rebind(), extraHeaders);
+        if (typeof body.allowLan === "boolean") {
+          setAllowLan(body.allowLan);
+        }
+        if (typeof body.lastCwd === "string") {
+          setLastCwd(body.lastCwd);
+        }
+        sendJson(res, 200, toLoopbackRemoteInfo(await rebind()), extraHeaders);
+        return;
+      }
+
+      if (pathname === "/api/remote/rotate" && req.method === "POST") {
+        const result = rotateToken();
+        currentToken = result.token;
+        remote = currentRemoteInfo();
+        extraHeaders["Set-Cookie"] = cookieHeader(currentToken);
+        sendJson(res, 200, result, extraHeaders);
         return;
       }
 
@@ -939,6 +935,21 @@ async function createServer({
           return;
         }
 
+        const remoteChat = !isLoopbackRequest(req);
+        if (remoteChat) {
+          try {
+            chatRateLimiter.check(presented || req.socket.remoteAddress);
+          } catch (err) {
+            sendJson(
+              res,
+              err && err.status ? err.status : 429,
+              { error: (err && err.message) || String(err) },
+              extraHeaders
+            );
+            return;
+          }
+        }
+
         const prompt = (body.prompt || "").trim();
         const rawImages = Array.isArray(body.images) ? body.images : [];
         if (!prompt && rawImages.length === 0) {
@@ -981,9 +992,30 @@ async function createServer({
         const forkFrom =
           typeof body.forkFrom === "string" ? body.forkFrom.trim() : "";
         const newSession = !!body.newSession || !sessionId || !!forkFrom;
-        const model = body.model || "grok-4.5";
-        const effort = body.effort || "high";
-        const cwd = body.cwd || process.cwd();
+        let model = body.model || "grok-4.5";
+        let effort = body.effort || "high";
+        let cwd = body.cwd || process.cwd();
+        if (remoteChat) {
+          try {
+            const resolved = assertModelEffort(body.model, body.effort, loadModels());
+            model = resolved.model;
+            effort = resolved.effort;
+            cwd = assertRemoteCwd(body.cwd || getLastCwd(), {
+              knownFolders: listKnownProjectFolders(listSessions({ limit: 500 })),
+              lastCwd: getLastCwd(),
+            });
+          } catch (err) {
+            sendJson(
+              res,
+              err && err.status ? err.status : 400,
+              { error: (err && err.message) || String(err) },
+              extraHeaders
+            );
+            return;
+          }
+        } else if (typeof body.cwd === "string" && body.cwd.trim()) {
+          setLastCwd(body.cwd);
+        }
         const forcedId = newSession ? body.sessionId || createSessionId() : sessionId;
         const clientTurnId =
           typeof body.clientTurnId === "string" ? body.clientTurnId.trim().slice(0, 80) : "";
@@ -1165,7 +1197,9 @@ async function createServer({
     get remote() {
       return remote;
     },
-    token,
+    get token() {
+      return currentToken;
+    },
     rebind,
   };
 }

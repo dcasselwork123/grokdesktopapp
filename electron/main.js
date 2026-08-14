@@ -271,10 +271,9 @@ function windowPrefs(overrides = {}) {
 
 function buildUiUrl({ sideNonce } = {}) {
   const baseUrl = api?.url || "";
-  const token = api?.token || access?.token;
   const trimmed = String(baseUrl || "").replace(/\/+$/, "");
   const u = new URL(`${trimmed}/`);
-  if (token) u.searchParams.set("token", token);
+  // Loopback is open and does not need ?token= in the window URL.
   if (sideNonce) u.searchParams.set("side", sideNonce);
   return u.toString();
 }
@@ -358,10 +357,8 @@ function createWindow(baseUrl) {
     }
   });
 
-  // Loopback does not need the token, but include it so copy/paste of the address bar works.
-  const token = api?.token || access?.token;
-  const url = token ? `${baseUrl}/?token=${encodeURIComponent(token)}` : baseUrl;
-  mainWindow.loadURL(url);
+  // Loopback is open and does not need ?token= in the window URL.
+  mainWindow.loadURL(baseUrl);
 
   attachCommonWindowHandlers(mainWindow);
 

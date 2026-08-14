@@ -102,7 +102,6 @@
     recoverInFlight: false,
     usage: null,
     usageTimer: null,
-    token: null,
     draftMode: true, // true until first message of a new chat
     attachments: [], // { id, name, mimeType, dataUrl }
     selectedModel: null,
@@ -192,6 +191,23 @@
     }
   }
 
+  let lastPostedCwd = "";
+
+  /** Desktop/loopback only — tells remote chat policy which folder was last used here. */
+  function persistLastCwdToServer(cwd) {
+    const value = (cwd || "").trim();
+    if (!value) return;
+    if (isPhoneUi() || (!isElectron() && !isLoopbackPage())) return;
+    if (cwdsEqual(value, lastPostedCwd)) return;
+    lastPostedCwd = value;
+    api("/api/remote/settings", {
+      method: "POST",
+      body: JSON.stringify({ lastCwd: value }),
+    }).catch(() => {
+      lastPostedCwd = "";
+    });
+  }
+
   function readLastCwd() {
     try {
       return (localStorage.getItem(LAST_CWD_KEY) || "").trim();
@@ -205,6 +221,7 @@
     els.cwdInput.value = value;
     els.cwdInput.title = value || "Choose working folder";
     if (value) persistLastCwd(value);
+    persistLastCwdToServer(value);
   }
 
   function getCwd() {
@@ -328,16 +345,8 @@
   // ---------- URL / token ----------
   function readTokenFromUrl() {
     const u = new URL(window.location.href);
-    const t = u.searchParams.get("token");
-    if (t) {
-      state.token = t;
-      try {
-        sessionStorage.setItem("grok_desktop_token", t);
-        localStorage.setItem("grok_desktop_token", t);
-      } catch {
-        /* ignore */
-      }
-      // Clean token out of the address bar (cookie now carries auth for assets/API).
+    if (u.searchParams.has("token")) {
+      // Bootstrap only — server already minted the HttpOnly cookie on this page load.
       try {
         u.searchParams.delete("token");
         const clean = u.pathname + (u.searchParams.toString() ? `?${u.searchParams}` : "") + u.hash;
@@ -345,26 +354,26 @@
       } catch {
         /* ignore */
       }
-    } else {
-      try {
-        state.token =
-          sessionStorage.getItem("grok_desktop_token") ||
-          localStorage.getItem("grok_desktop_token");
-      } catch {
-        state.token = null;
-      }
+    }
+    try {
+      localStorage.removeItem("grok_desktop_token");
+    } catch {
+      /* ignore */
+    }
+    try {
+      sessionStorage.removeItem("grok_desktop_token");
+    } catch {
+      /* ignore */
     }
   }
 
   function apiUrl(path) {
-    const u = new URL(path, window.location.origin);
-    if (state.token) u.searchParams.set("token", state.token);
-    return u.toString();
+    // Query token is bootstrap-only; API calls use the same-origin cookie.
+    return new URL(path, window.location.origin).toString();
   }
 
   async function api(path, opts = {}) {
     const headers = { ...(opts.headers || {}) };
-    if (state.token) headers["X-Grok-Token"] = state.token;
     if (opts.body && !headers["Content-Type"]) {
       headers["Content-Type"] = "application/json";
     }
@@ -2195,7 +2204,6 @@
     }
 
     const headers = { "Content-Type": "application/json" };
-    if (state.token) headers["X-Grok-Token"] = state.token;
 
     const ac = new AbortController();
     state.abortController = ac;
@@ -2811,12 +2819,9 @@
     showReconnectStatus("Reconnecting…", "info");
 
     const ac = ensureAbortController();
-    const headers = {};
-    if (state.token) headers["X-Grok-Token"] = state.token;
 
     try {
       const res = await fetch(apiUrl(`/api/chat/runs/${encodeURIComponent(runKey)}`), {
-        headers,
         signal: ac.signal,
       });
       if (!res.ok || !res.body) {
@@ -3640,6 +3645,7 @@
     const copyBtn = document.getElementById("btn-copy-url");
     const lanRow = document.getElementById("remote-lan-row");
     const lanCheck = document.getElementById("remote-allow-lan");
+    const rotateBtn = document.getElementById("btn-rotate-token");
     const canCopy = remoteUrlIsCopyable(info);
 
     if (urlEl) {
@@ -3684,6 +3690,7 @@
     }
 
     if (lanRow) lanRow.classList.toggle("hidden", !canShowLanToggle());
+    if (rotateBtn) rotateBtn.classList.toggle("hidden", !canShowLanToggle());
     if (lanCheck && !remoteLanSaving) lanCheck.checked = !!(info && info.allowLan);
   }
 
@@ -3792,6 +3799,21 @@
         }, 1500);
       } catch {
         btnCopy.textContent = "Select the URL and copy manually";
+      }
+    });
+  }
+
+  const btnRotate = document.getElementById("btn-rotate-token");
+  if (btnRotate) {
+    btnRotate.addEventListener("click", async () => {
+      if (!confirm("Existing phone tabs will need the new URL.")) return;
+      try {
+        const info = await api("/api/remote/rotate", { method: "POST" });
+        applyRemoteInfo(info);
+        const statusEl = document.getElementById("remote-status");
+        if (statusEl) statusEl.textContent = "Phone access rotated. Copy the new URL.";
+      } catch {
+        if (isPhoneUi()) btnRotate.classList.add("hidden");
       }
     });
   }
@@ -4142,7 +4164,7 @@
           "The app backend didn’t respond. Restart Grok Desktop and try again.",
         hint:
           setup?.hintExtra ||
-          "Fully quit Grok Desktop on the PC, relaunch it, then reload this page. Use the phone URL from 📱 (includes <code>?token=…</code>).",
+          "Fully quit Grok Desktop on the PC, relaunch it, then reload this page. Use the phone URL from 📱.",
         actions: [
           {
             label: "Retry",
