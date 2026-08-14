@@ -64,7 +64,7 @@ Then open http://127.0.0.1:3847. The setup gate is the same.
 | **Model / Effort** | Composer selectors, including a custom model picker |
 | **Usage** | Weekly usage pie in the composer; click for session context |
 | **Folder** | Desktop: native folder dialog. Phone: known project folders or the last desktop folder (not a free-form `C:\` path) |
-| **Access control** | Desktop default is **Full access** (tools run without asking). **Safer** uses `dontAsk` (tools that need approval are denied and the turn continues). Phone / remote chat **never** gets `bypassPermissions` |
+| **Access control** | Default **Full access** (tools run). **Safer** denies tools in this UI (turns usually cancel). Phone uses the same PC setting — it can code. The phone cannot change the mode. |
 | **First-seen folder** | Desktop warns once when you open a working folder Grok has not used here before |
 | **Stop** | Cancel an in-flight run |
 | **Phone** | Same UI in Safari; reconnects if iOS drops the stream |
@@ -102,11 +102,11 @@ Grok still runs **on this PC** with real tools. The desktop app can shrink what 
 | Mode | CLI flag | What it means |
 |------|----------|----------------|
 | **Full access** (default) | `--permission-mode bypassPermissions` | Tools run without asking. This is the usual coding-agent mode. |
-| **Safer** | `--permission-mode dontAsk` | Tools that would need approval are **denied** and the turn continues. Good for a chat that should not silently run commands. |
+| **Safer** | `--permission-mode dontAsk` | Tools are **denied** and the turn usually **cancels**. Talk-only; not useful for coding. |
 
-The setting is stored in `~/.grok-desktop/config.json` as `permissionMode`.
+The setting is stored in `~/.grok-desktop/config.json` as `permissionMode`. Change it on the PC (Access control). The phone uses that same value so you can send coding work from Safari.
 
-**Remote / phone:** chat never gets `bypassPermissions`, no matter what the desktop control says and no matter what the phone JSON body sends. A stolen phone token can still talk in a **known project folder**; it cannot flip the PC into full unattended tool use.
+**Remote / phone:** uses the PC Access setting (Full access by default). The phone JSON body cannot override it. Chat cwd is still a known project folder or last desktop folder — not a free-form `C:\`.
 
 **First-seen folder:** the first time a desktop working folder is not in `seenFolders`, the composer shows a one-line warning that Grok can read and run against whatever is in that folder (a newly cloned repo counts). The path is recorded after the first successful send or an explicit dismiss. The phone already picks a known project, so it does not nag again.
 

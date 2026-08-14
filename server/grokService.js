@@ -1000,13 +1000,13 @@ function buildExitErrorMessage({
 }
 
 // Spike: default/dontAsk deny tools with no approve event (dontAsk: "User cancelled").
-// auto runs tools (too powerful for remote). Desktop default stays bypassPermissions.
+// Phone uses the same stored Access setting as the PC so remote coding still works.
+// A phone JSON body cannot pick the mode — httpApi passes getPermissionMode() only.
 const SAFER_PERMISSION_MODE = "dontAsk";
 const DESKTOP_DEFAULT_PERMISSION_MODE = "bypassPermissions";
 const ALLOWED_PERMISSION_MODES = ["bypassPermissions", "dontAsk", "default"];
 
-function resolvePermissionMode({ remote, permissionMode } = {}) {
-  if (remote) return SAFER_PERMISSION_MODE;
+function resolvePermissionMode({ permissionMode } = {}) {
   if (ALLOWED_PERMISSION_MODES.includes(permissionMode)) return permissionMode;
   return DESKTOP_DEFAULT_PERMISSION_MODE;
 }

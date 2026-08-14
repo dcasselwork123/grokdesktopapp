@@ -58,8 +58,8 @@ IPC: `electron/main.js` → `pick-folder`; `electron/preload.js` → `grokDeskto
 | Context | Mode |
 |---------|------|
 | **Desktop default** | **Full access** — `--permission-mode bypassPermissions`. Tools run without asking. |
-| **Desktop Safer** | `--permission-mode dontAsk`. Tools that need approval are denied and the turn continues. |
-| **Remote / phone** | **Never** `bypassPermissions`, regardless of the desktop setting or a `permissionMode` field on the chat body. |
+| **Desktop Safer** | `--permission-mode dontAsk`. Tools are denied and the turn usually cancels. Talk-only. |
+| **Remote / phone** | Same stored `permissionMode` as the PC (Full access by default). Ignore `permissionMode` on the phone JSON body. |
 
 Persist as `permissionMode` in `~/.grok-desktop/config.json`. Do not take a permission mode from remote JSON.
 

@@ -1031,7 +1031,8 @@ async function createServer({
         }
         let permissionMode;
         if (remoteChat) {
-          permissionMode = "dontAsk";
+          // Same Access setting as the PC. Ignore a phone-supplied override.
+          permissionMode = getPermissionMode();
         } else {
           const bodyMode =
             typeof body.permissionMode === "string" ? body.permissionMode.trim() : "";

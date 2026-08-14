@@ -16,24 +16,25 @@ function test(name, fn) {
   }
 }
 
-test("remote always dontAsk", () => {
-  assert.strictEqual(resolvePermissionMode({ remote: true }), "dontAsk");
+test("default is bypassPermissions (desktop and phone)", () => {
+  assert.strictEqual(resolvePermissionMode({}), "bypassPermissions");
+  assert.strictEqual(resolvePermissionMode({ remote: true }), "bypassPermissions");
 });
 
-test("remote ignores stored/body bypassPermissions", () => {
+test("honors stored Full access for remote coding", () => {
   assert.strictEqual(
     resolvePermissionMode({ remote: true, permissionMode: "bypassPermissions" }),
-    "dontAsk"
+    "bypassPermissions"
   );
 });
 
-test("desktop default is bypassPermissions", () => {
-  assert.strictEqual(resolvePermissionMode({ remote: false }), "bypassPermissions");
-});
-
-test("desktop honors dontAsk", () => {
+test("honors Safer when that is the stored mode", () => {
   assert.strictEqual(
     resolvePermissionMode({ remote: false, permissionMode: "dontAsk" }),
+    "dontAsk"
+  );
+  assert.strictEqual(
+    resolvePermissionMode({ remote: true, permissionMode: "dontAsk" }),
     "dontAsk"
   );
 });

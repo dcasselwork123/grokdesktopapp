@@ -148,7 +148,7 @@
     { id: "dontAsk", label: "Safer" },
   ];
   const ACCESS_TOOLTIP =
-    "Full access lets Grok run tools in this folder without asking. Safer denies tools in this headless UI.";
+    "Full access lets Grok run tools in this folder without asking (phone uses this too). Safer denies tools and usually cancels the turn.";
 
   const MAX_ATTACHMENTS = 8;
   // Keep attachments small so vision is fast and uploads stay reliable
