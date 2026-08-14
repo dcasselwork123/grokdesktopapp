@@ -7,3 +7,4 @@ dist/
 .tmp-pj-images/
 .grok-desktop/
 *.local
+localdocs/
