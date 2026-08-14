@@ -2,6 +2,7 @@
 
 const { app, BrowserWindow, shell, ipcMain, dialog } = require("electron");
 const path = require("path");
+const { randomUUID } = require("crypto");
 const { createServer } = require("../server/httpApi");
 const { resolveAccessSettings } = require("../server/remoteAccess");
 
@@ -10,6 +11,8 @@ let api = null;
 let access = null;
 let showedUncaughtDialog = false;
 let crashReloadPending = false;
+const extraWindows = new Set();
+const sidechatPayloads = new Map();
 
 function formatError(err) {
   return err && err.stack ? err.stack : String(err);
@@ -189,14 +192,8 @@ function attachWindowGuards(win) {
   });
 }
 
-function createWindow(baseUrl) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    focusMainWindow();
-    return mainWindow;
-  }
-
-  crashReloadPending = false;
-  mainWindow = new BrowserWindow({
+function windowPrefs(overrides = {}) {
+  return {
     width: 1280,
     height: 840,
     minWidth: 900,
@@ -211,7 +208,36 @@ function createWindow(baseUrl) {
       nodeIntegration: false,
       sandbox: true,
     },
+    ...overrides,
+  };
+}
+
+function buildUiUrl({ sideNonce } = {}) {
+  const baseUrl = api?.url || "";
+  const token = api?.token || access?.token;
+  const trimmed = String(baseUrl || "").replace(/\/+$/, "");
+  const u = new URL(`${trimmed}/`);
+  if (token) u.searchParams.set("token", token);
+  if (sideNonce) u.searchParams.set("side", sideNonce);
+  return u.toString();
+}
+
+function attachCommonWindowHandlers(win) {
+  win.webContents.setWindowOpenHandler(({ url: target }) => {
+    shell.openExternal(target);
+    return { action: "deny" };
   });
+  attachWindowGuards(win);
+}
+
+function createWindow(baseUrl) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    focusMainWindow();
+    return mainWindow;
+  }
+
+  crashReloadPending = false;
+  mainWindow = new BrowserWindow(windowPrefs());
 
   mainWindow.once("ready-to-show", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -230,18 +256,54 @@ function createWindow(baseUrl) {
   const url = token ? `${baseUrl}/?token=${encodeURIComponent(token)}` : baseUrl;
   mainWindow.loadURL(url);
 
-  mainWindow.webContents.setWindowOpenHandler(({ url: target }) => {
-    shell.openExternal(target);
-    return { action: "deny" };
-  });
-
-  attachWindowGuards(mainWindow);
+  attachCommonWindowHandlers(mainWindow);
 
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
 
   return mainWindow;
+}
+
+function createSideWindow(payload = {}, fromWin = null) {
+  if (!api?.url) return null;
+  const nonce = randomUUID();
+  sidechatPayloads.set(nonce, payload && typeof payload === "object" ? payload : {});
+  setTimeout(() => sidechatPayloads.delete(nonce), 60_000);
+
+  const win = new BrowserWindow(
+    windowPrefs({
+      width: 980,
+      height: 720,
+      minWidth: 640,
+      minHeight: 480,
+      title: "Side chat — Grok Desktop",
+    })
+  );
+  extraWindows.add(win);
+
+  if (fromWin && !fromWin.isDestroyed()) {
+    try {
+      const [x, y] = fromWin.getPosition();
+      win.setPosition(x + 36, y + 36);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  win.once("ready-to-show", () => {
+    if (!win.isDestroyed()) {
+      win.show();
+      win.focus();
+    }
+  });
+
+  win.loadURL(buildUiUrl({ sideNonce: nonce }));
+  attachCommonWindowHandlers(win);
+  win.on("closed", () => {
+    extraWindows.delete(win);
+  });
+  return win;
 }
 
 function showFatal(err) {
@@ -316,6 +378,19 @@ ipcMain.handle("get-api-info", () => ({
   token: api?.token || access?.token,
   remote: api?.remote || null,
 }));
+
+ipcMain.handle("open-sidechat", (event, payload) => {
+  const fromWin = BrowserWindow.fromWebContents(event.sender);
+  const win = createSideWindow(payload || {}, fromWin);
+  return { ok: !!win };
+});
+
+ipcMain.handle("get-sidechat-init", (_event, nonce) => {
+  if (!nonce || typeof nonce !== "string") return null;
+  const payload = sidechatPayloads.get(nonce) || null;
+  if (payload) sidechatPayloads.delete(nonce);
+  return payload;
+});
 
 ipcMain.handle("pick-folder", async (event, defaultPath) => {
   const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;

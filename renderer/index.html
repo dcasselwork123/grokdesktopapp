@@ -56,6 +56,42 @@
       <div id="session-list" class="session-list" role="list"></div>
 
       <div class="sidebar-footer">
+        <div class="account-wrap">
+          <button
+            type="button"
+            id="btn-account"
+            class="account-bubble unsigned"
+            title="Account"
+            aria-label="Account"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="account-popover"
+          >
+            <span id="account-initials">?</span>
+          </button>
+          <div id="account-popover" class="account-popover hidden" role="menu" aria-hidden="true">
+            <div class="account-pop-head">
+              <div class="account-pop-avatar" id="account-pop-avatar" aria-hidden="true">?</div>
+              <div class="account-pop-meta">
+                <div id="account-pop-name" class="account-pop-name">Not signed in</div>
+                <div id="account-pop-email" class="account-pop-email"></div>
+              </div>
+            </div>
+            <div class="account-pop-actions">
+              <button type="button" id="btn-account-login-x" class="account-pop-item" role="menuitem">
+                Sign in with X
+              </button>
+              <button type="button" id="btn-account-login-email" class="account-pop-item" role="menuitem">
+                Sign in with email
+              </button>
+              <div class="context-menu-sep" role="separator"></div>
+              <button type="button" id="btn-account-logout" class="account-pop-item danger" role="menuitem">
+                Log out
+              </button>
+            </div>
+            <p id="account-pop-hint" class="account-pop-hint"></p>
+          </div>
+        </div>
         <div class="status-pill" id="status-pill" title="Backend status">
           <span class="dot" id="status-dot"></span>
           <span id="status-text">Connecting…</span>
@@ -72,6 +108,7 @@
         <div class="topbar-title">
           <span class="title-icon">✦</span>
           <span id="chat-title">New session</span>
+          <span id="sidechat-badge" class="sidechat-badge hidden">Side chat</span>
           <span id="chat-project" class="project-badge"></span>
         </div>
         <div class="topbar-actions">
@@ -95,6 +132,7 @@
 
       <footer class="composer">
         <div id="attach-strip" class="attach-strip hidden" aria-label="Attached images"></div>
+        <div id="queue-strip" class="queue-strip hidden" aria-label="Queued follow-ups"></div>
         <div class="composer-box">
           <button type="button" id="btn-attach" class="btn-attach" title="Add image" aria-label="Add image">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
@@ -123,10 +161,24 @@
         </div>
         <div class="composer-toolbar">
           <div class="selectors">
-            <label class="selector">
+            <div class="selector model-selector" id="model-selector">
               <span class="sel-label">Model</span>
-              <select id="model-select"></select>
-            </label>
+              <button
+                type="button"
+                id="model-select-btn"
+                class="model-select-btn"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+                aria-controls="model-menu"
+                title="Choose model"
+              >
+                <span id="model-select-label" class="model-select-label">Grok</span>
+                <svg class="model-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </button>
+              <div id="model-menu" class="model-menu hidden" role="listbox" aria-labelledby="model-select-btn"></div>
+            </div>
             <label class="selector effort-selector" title="Reasoning effort">
               <span class="sel-label">Effort</span>
               <div class="effort-control">

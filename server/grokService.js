@@ -114,6 +114,7 @@ function getAuthStatus() {
       path: authPath,
       email: null,
       userId: null,
+      firstName: null,
     };
   }
 
@@ -128,6 +129,7 @@ function getAuthStatus() {
       path: authPath,
       email: null,
       userId: null,
+      firstName: null,
     };
   }
 
@@ -142,6 +144,7 @@ function getAuthStatus() {
       path: authPath,
       email: null,
       userId: null,
+      firstName: null,
     };
   }
 
@@ -153,6 +156,7 @@ function getAuthStatus() {
       path: authPath,
       email: null,
       userId: null,
+      firstName: null,
     };
   }
 
@@ -165,6 +169,7 @@ function getAuthStatus() {
       path: authPath,
       email: null,
       userId: null,
+      firstName: null,
     };
   }
 
@@ -177,6 +182,11 @@ function getAuthStatus() {
     typeof account.refresh_token === "string" && account.refresh_token.length > 0;
   const hasCredential = hasKey || hasRefresh;
 
+  const firstName =
+    typeof account.first_name === "string" && account.first_name.trim()
+      ? account.first_name.trim()
+      : null;
+
   if (!hasCredential) {
     return {
       present: true,
@@ -185,6 +195,7 @@ function getAuthStatus() {
       path: authPath,
       email: account.email || null,
       userId: account.user_id || account.principal_id || null,
+      firstName,
     };
   }
 
@@ -202,6 +213,7 @@ function getAuthStatus() {
     path: authPath,
     email: typeof account.email === "string" ? account.email : null,
     userId: account.user_id || account.principal_id || null,
+    firstName,
   };
 }
 
@@ -216,6 +228,7 @@ const loginState = {
   signal: null,
   error: null,
   log: "",
+  method: null,
 };
 
 function appendLoginLog(chunk) {
@@ -235,6 +248,7 @@ function getLoginStatus() {
     error: loginState.error,
     // Last lines only — may contain a URL; never tokens from auth.json
     logTail: loginState.log ? loginState.log.slice(-1200) : "",
+    method: loginState.method,
   };
 }
 
@@ -242,7 +256,7 @@ function getLoginStatus() {
  * Spawn `grok login --oauth` so the real browser OAuth flow runs on this machine.
  * Same as the CLI; the desktop app only triggers it.
  */
-function startGrokLogin({ oauth = true } = {}) {
+function startGrokLogin({ oauth = true, method = null } = {}) {
   refreshGrokBinary();
   const bin = resolveGrokBinary();
   if (!bin) {
@@ -269,6 +283,7 @@ function startGrokLogin({ oauth = true } = {}) {
   loginState.signal = null;
   loginState.error = null;
   loginState.log = "";
+  loginState.method = method === "email" ? "email" : "x";
 
   const args = oauth ? ["login", "--oauth"] : ["login"];
 
@@ -340,6 +355,54 @@ function cancelGrokLogin() {
   return { ok: true, cancelled: true, ...getLoginStatus() };
 }
 
+function publicAuthFields(auth) {
+  return {
+    present: !!auth.present,
+    valid: !!auth.valid,
+    reason: auth.reason || null,
+    email: auth.email || null,
+    userId: auth.userId || null,
+    firstName: auth.firstName || null,
+  };
+}
+
+/**
+ * Sign out via `grok logout` and drop the cached weekly usage snapshot.
+ * Never returns tokens.
+ */
+function logoutGrok() {
+  return new Promise((resolve, reject) => {
+    cancelGrokLogin();
+    refreshGrokBinary();
+    const bin = resolveGrokBinary();
+    if (!bin) {
+      const err = new Error("Grok CLI is not installed.");
+      err.code = "NOT_INSTALLED";
+      reject(err);
+      return;
+    }
+    execFile(
+      bin,
+      ["logout"],
+      { timeout: 25000, windowsHide: true, maxBuffer: 1024 * 1024 },
+      (err) => {
+        weeklyCreditsCache = { at: 0, data: null };
+        const auth = getAuthStatus();
+        if (err && auth.valid) {
+          const e = new Error(err.message || "Logout failed");
+          e.code = "LOGOUT_FAILED";
+          reject(e);
+          return;
+        }
+        resolve({
+          ok: !auth.valid,
+          auth: publicAuthFields(auth),
+        });
+      }
+    );
+  });
+}
+
 /**
  * Startup readiness: CLI installed + auth present/valid.
  */
@@ -356,13 +419,7 @@ function getSetupStatus() {
     grokBin: resolved || null,
     grokHome: getGrokHome(),
     platform: process.platform,
-    auth: {
-      present: auth.present,
-      valid: auth.valid,
-      reason: auth.reason,
-      email: auth.email,
-      userId: auth.userId,
-    },
+    auth: publicAuthFields(auth),
     login: getLoginStatus(),
     install: {
       docsUrl: "https://x.ai/cli",
@@ -878,6 +935,7 @@ function runPrompt({
   effort = "high",
   newSession = false,
   images = [],
+  forkFrom = null,
 }) {
   const { emitter, emitBuffered } = createBufferedEmitter();
   refreshGrokBinary();
@@ -1247,13 +1305,29 @@ function runPrompt({
     attachChild(proc, { isResume, isFork });
   }
 
-  startChild({
-    resumeId: requestedResume ? sessionId : null,
-    forkId: newSession && sessionId ? sessionId : null,
-    isResume: requestedResume,
-    isFork: false,
-    writeDebug: requestedResume,
-  });
+  const forkSource =
+    forkFrom && typeof forkFrom === "string" ? forkFrom.trim() : "";
+  if (forkSource) {
+    clearStaleSessionLocks(forkSource);
+    const forkId = sessionId || createSessionId();
+    resolvedSessionId = forkId;
+    startChild({
+      resumeId: forkSource,
+      forkId,
+      isResume: false,
+      isFork: true,
+      writeDebug: false,
+    });
+    emitBuffered("sessionId", forkId);
+  } else {
+    startChild({
+      resumeId: requestedResume ? sessionId : null,
+      forkId: newSession && sessionId ? sessionId : null,
+      isResume: requestedResume,
+      isFork: false,
+      writeDebug: requestedResume,
+    });
+  }
 
   emitter.kill = () => {
     userCancelled = true;
@@ -1395,6 +1469,7 @@ function getStatus() {
     installed: setup.installed,
     authenticated: setup.auth.valid,
     authEmail: setup.auth.email || null,
+    authFirstName: setup.auth.firstName || null,
   };
 }
 
@@ -1660,6 +1735,7 @@ module.exports = {
   getSetupStatus,
   startGrokLogin,
   cancelGrokLogin,
+  logoutGrok,
   getLoginStatus,
   listSessions,
   listSessionsCli,

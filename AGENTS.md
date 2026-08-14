@@ -60,6 +60,7 @@ IPC: `electron/main.js` → `pick-folder`; `electron/preload.js` → `grokDeskto
 |---------|----------|
 | `/clear` | Clears the UI and starts a **new** draft session (same folder). Alias of “fresh chat”. |
 | `/new` | Same as `/clear`. |
+| `/btw [message]` | Opens a **side chat** in a new window (Electron) or browser tab. Forks the current session so the aside has context, without interrupting the main turn. |
 
 Other TUI slash commands (`/compact`, `/theme`, …) are **not** implemented in the desktop app; they would only be sent as plain text if typed.
 

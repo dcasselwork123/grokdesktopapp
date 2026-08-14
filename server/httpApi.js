@@ -14,6 +14,7 @@ const {
   getSetupStatus,
   startGrokLogin,
   cancelGrokLogin,
+  logoutGrok,
   getLoginStatus,
   bulkSessionAction,
   renameSession,
@@ -139,7 +140,7 @@ function gatePageHtml() {
   .card{max-width:420px;background:#222;border:1px solid #333;border-radius:16px;padding:22px}
   h1{font-size:18px;margin:0 0 10px}
   p{margin:0 0 10px;color:#aaa;font-size:14px}
-  code{color:#d97757;word-break:break-all}
+  code{color:#9d00ff;word-break:break-all}
 </style></head><body>
 <div class="card">
   <h1>Open the full phone URL</h1>
@@ -264,10 +265,11 @@ function finalizeRun(activeRuns, record, donePayload) {
   }
 }
 
-function registerRun(activeRuns, { runId, sessionId, emitter }) {
+function registerRun(activeRuns, { runId, sessionId, emitter, clientTurnId }) {
   const record = {
     runId,
     sessionId: sessionId || null,
+    clientTurnId: clientTurnId || null,
     emitter,
     startedAt: Date.now(),
     lastEventAt: Date.now(),
@@ -294,14 +296,80 @@ function registerRun(activeRuns, { runId, sessionId, emitter }) {
   return record;
 }
 
-function findActiveRunBySessionId(activeRuns, sessionId) {
-  if (!sessionId) return null;
+function pickBestRun(matches) {
   let best = null;
-  for (const record of activeRuns.values()) {
-    if (record.sessionId !== sessionId || record.done) continue;
-    if (!best || record.startedAt > best.startedAt) best = record;
+  for (const record of matches) {
+    if (!best) {
+      best = record;
+      continue;
+    }
+    if (!record.done && best.done) {
+      best = record;
+      continue;
+    }
+    if (!!record.done === !!best.done && record.startedAt > best.startedAt) {
+      best = record;
+    }
   }
   return best;
+}
+
+function findRunBySessionId(activeRuns, sessionId, { includeDone = false } = {}) {
+  if (!sessionId) return null;
+  const matches = [];
+  for (const record of activeRuns.values()) {
+    if (record.sessionId !== sessionId) continue;
+    if (record.done && !includeDone) continue;
+    matches.push(record);
+  }
+  return pickBestRun(matches);
+}
+
+function findRunByClientTurnId(activeRuns, clientTurnId, { includeDone = true } = {}) {
+  if (!clientTurnId) return null;
+  const matches = [];
+  for (const record of activeRuns.values()) {
+    if (record.clientTurnId !== clientTurnId) continue;
+    if (record.done && !includeDone) continue;
+    matches.push(record);
+  }
+  return pickBestRun(matches);
+}
+
+function findActiveRunBySessionId(activeRuns, sessionId) {
+  return findRunBySessionId(activeRuns, sessionId, { includeDone: false });
+}
+
+function serializeRun(record) {
+  if (!record) return null;
+  return {
+    runId: record.runId,
+    sessionId: record.sessionId,
+    startedAt: record.startedAt,
+    done: !!record.done,
+    clientTurnId: record.clientTurnId || null,
+  };
+}
+
+function sendRunLookup(res, record, extraHeaders) {
+  if (!record) {
+    sendJson(res, 200, { run: null, runs: [] }, extraHeaders);
+    return;
+  }
+  const run = serializeRun(record);
+  sendJson(
+    res,
+    200,
+    {
+      run,
+      runId: run.runId,
+      sessionId: run.sessionId,
+      startedAt: run.startedAt,
+      done: run.done,
+      runs: [run],
+    },
+    extraHeaders
+  );
 }
 
 function resolveStaticFile(staticDir, pathname) {
@@ -401,6 +469,7 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
         try {
           const result = startGrokLogin({
             oauth: body.oauth !== false,
+            method: body.method === "email" ? "email" : "x",
           });
           sendJson(res, 200, result, extraHeaders);
         } catch (err) {
@@ -427,6 +496,22 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
 
       if (pathname === "/api/auth/login/cancel" && req.method === "POST") {
         sendJson(res, 200, cancelGrokLogin(), extraHeaders);
+        return;
+      }
+
+      if (pathname === "/api/auth/logout" && req.method === "POST") {
+        try {
+          const result = await logoutGrok();
+          sendJson(res, 200, result, extraHeaders);
+        } catch (err) {
+          const status = err.code === "NOT_INSTALLED" ? 400 : 500;
+          sendJson(
+            res,
+            status,
+            { error: err.message || String(err), code: err.code || null },
+            extraHeaders
+          );
+        }
         return;
       }
 
@@ -576,11 +661,15 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
         }
 
         const sessionId = body.sessionId || null;
-        const newSession = !!body.newSession || !sessionId;
+        const forkFrom =
+          typeof body.forkFrom === "string" ? body.forkFrom.trim() : "";
+        const newSession = !!body.newSession || !sessionId || !!forkFrom;
         const model = body.model || "grok-4.5";
         const effort = body.effort || "high";
         const cwd = body.cwd || process.cwd();
         const forcedId = newSession ? body.sessionId || createSessionId() : sessionId;
+        const clientTurnId =
+          typeof body.clientTurnId === "string" ? body.clientTurnId.trim().slice(0, 80) : "";
 
         writeSseHeaders(res, extraHeaders);
 
@@ -594,11 +683,13 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
           effort,
           newSession,
           images: savedImages,
+          forkFrom: forkFrom || null,
         });
         const record = registerRun(activeRuns, {
           runId,
           sessionId: forcedId,
           emitter,
+          clientTurnId: clientTurnId || null,
         });
         // Disconnect only detaches this HTTP client — the grok child keeps running.
         attachSseClient(record, req, res);
@@ -649,46 +740,30 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
 
       if (pathname === "/api/runs" && req.method === "GET") {
         const sessionId = parsed.searchParams.get("sessionId") || "";
-        if (!sessionId) {
-          const runs = [];
-          for (const record of activeRuns.values()) {
-            if (record.done) continue;
-            runs.push({
-              runId: record.runId,
-              sessionId: record.sessionId,
-              startedAt: record.startedAt,
-            });
-          }
-          sendJson(res, 200, { runs }, extraHeaders);
+        const clientTurnId = parsed.searchParams.get("clientTurnId") || "";
+        const includeDone = parsed.searchParams.get("includeDone") === "1";
+        if (clientTurnId) {
+          sendRunLookup(
+            res,
+            findRunByClientTurnId(activeRuns, clientTurnId, { includeDone: true }),
+            extraHeaders
+          );
           return;
         }
-        const record = findActiveRunBySessionId(activeRuns, sessionId);
-        if (!record) {
-          sendJson(res, 200, { run: null, runs: [] }, extraHeaders);
+        if (sessionId) {
+          sendRunLookup(
+            res,
+            findRunBySessionId(activeRuns, sessionId, { includeDone }),
+            extraHeaders
+          );
           return;
         }
-        sendJson(
-          res,
-          200,
-          {
-            run: {
-              runId: record.runId,
-              sessionId: record.sessionId,
-              startedAt: record.startedAt,
-            },
-            runId: record.runId,
-            sessionId: record.sessionId,
-            startedAt: record.startedAt,
-            runs: [
-              {
-                runId: record.runId,
-                sessionId: record.sessionId,
-                startedAt: record.startedAt,
-              },
-            ],
-          },
-          extraHeaders
-        );
+        const runs = [];
+        for (const record of activeRuns.values()) {
+          if (record.done) continue;
+          runs.push(serializeRun(record));
+        }
+        sendJson(res, 200, { runs }, extraHeaders);
         return;
       }
 
@@ -699,7 +774,10 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
         } catch {
           /* empty */
         }
-        const record = activeRuns.get(body.runId);
+        const record =
+          (body.runId && activeRuns.get(body.runId)) ||
+          findActiveRunBySessionId(activeRuns, body.sessionId) ||
+          findRunByClientTurnId(activeRuns, body.clientTurnId, { includeDone: false });
         if (record) {
           if (!record.done) {
             try {
@@ -763,4 +841,8 @@ function createServer({ port = 3847, host = "127.0.0.1", staticDir, token = null
   });
 }
 
-module.exports = { createServer };
+module.exports = {
+  createServer,
+  findRunBySessionId,
+  findRunByClientTurnId,
+};

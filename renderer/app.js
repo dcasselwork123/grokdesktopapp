@@ -14,11 +14,16 @@
     btnAttach: $("#btn-attach"),
     fileAttach: $("#file-attach"),
     attachStrip: $("#attach-strip"),
+    queueStrip: $("#queue-strip"),
     prompt: $("#prompt"),
     messages: $("#messages"),
     chatTitle: $("#chat-title"),
     chatProject: $("#chat-project"),
-    modelSelect: $("#model-select"),
+    sidechatBadge: $("#sidechat-badge"),
+    modelSelector: $("#model-selector"),
+    modelSelectBtn: $("#model-select-btn"),
+    modelSelectLabel: $("#model-select-label"),
+    modelMenu: $("#model-menu"),
     effortSlider: $("#effort-slider"),
     effortValue: $("#effort-value"),
     cwdInput: $("#cwd-input"),
@@ -49,6 +54,16 @@
     setupInstallCmd: $("#setup-install-cmd"),
     setupActions: $("#setup-actions"),
     setupHint: $("#setup-hint"),
+    btnAccount: $("#btn-account"),
+    accountInitials: $("#account-initials"),
+    accountPopover: $("#account-popover"),
+    accountPopAvatar: $("#account-pop-avatar"),
+    accountPopName: $("#account-pop-name"),
+    accountPopEmail: $("#account-pop-email"),
+    accountPopHint: $("#account-pop-hint"),
+    btnAccountLoginX: $("#btn-account-login-x"),
+    btnAccountLoginEmail: $("#btn-account-login-email"),
+    btnAccountLogout: $("#btn-account-logout"),
     reconnectBanner: document.getElementById("reconnect-banner"),
     sessionBanner: document.getElementById("session-banner"),
     sessionBannerText: document.getElementById("session-banner-text"),
@@ -75,11 +90,21 @@
     attachingRunId: null,
     turnGen: 0,
     liveSessionIds: new Set(),
+    pendingReattach: null, // { sessionId, clientTurnId, startedAt, turnGen }
+    recoverInFlight: false,
     usage: null,
     usageTimer: null,
     token: null,
     draftMode: true, // true until first message of a new chat
     attachments: [], // { id, name, mimeType, dataUrl }
+    selectedModel: null,
+    modelMenuOpen: false,
+    sendInFlight: false,
+    turnDone: null,
+    sidechatMode: false,
+    pendingForkFrom: null,
+    pendingSidechat: null,
+    promptQueue: [], // follow-ups to send after the current turn (CLI Enter)
     // Projects start collapsed; only ids in this set are expanded
     expandedProjects: new Set(),
     selectMode: false,
@@ -92,6 +117,7 @@
     setupReady: false,
     setup: null,
     loginPollTimer: null,
+    loginMethod: null,
   };
 
   // Preferred left→right order for the effort slider (unknown ids sort last)
@@ -128,7 +154,7 @@
 
   function setActiveSessionId(id) {
     state.activeSessionId = id || null;
-    persistLastSession(state.activeSessionId);
+    if (!state.sidechatMode) persistLastSession(state.activeSessionId);
   }
 
   function isElectron() {
@@ -344,18 +370,95 @@
   }
 
   // ---------- Models / effort ----------
-  function populateModels(models) {
-    state.models = models;
-    els.modelSelect.innerHTML = "";
-    for (const m of models) {
-      const opt = document.createElement("option");
-      opt.value = m.id;
-      opt.textContent = m.name || m.id;
-      els.modelSelect.appendChild(opt);
+  function getModelValue() {
+    return state.selectedModel || state.models[0]?.id || "grok-4.5";
+  }
+
+  function modelLabel(id) {
+    const m = state.models.find((x) => x.id === id);
+    return (m && (m.name || m.id)) || id || "Model";
+  }
+
+  function closeModelMenu() {
+    if (!els.modelMenu || !els.modelSelectBtn) return;
+    state.modelMenuOpen = false;
+    els.modelMenu.classList.add("hidden");
+    if (els.modelSelector) els.modelSelector.classList.remove("open");
+    els.modelSelectBtn.setAttribute("aria-expanded", "false");
+  }
+
+  function openModelMenu() {
+    if (!els.modelMenu || !els.modelSelectBtn) return;
+    renderModelMenu();
+    state.modelMenuOpen = true;
+    els.modelMenu.classList.remove("hidden");
+    if (els.modelSelector) els.modelSelector.classList.add("open");
+    els.modelSelectBtn.setAttribute("aria-expanded", "true");
+    const selected = els.modelMenu.querySelector('.model-option[aria-selected="true"]');
+    if (selected) {
+      try {
+        selected.focus();
+      } catch {
+        /* ignore */
+      }
     }
-    if (models[0]) {
-      els.modelSelect.value = models[0].id;
-      populateEfforts(models[0]);
+  }
+
+  function toggleModelMenu() {
+    if (state.modelMenuOpen) closeModelMenu();
+    else openModelMenu();
+  }
+
+  function renderModelMenu() {
+    if (!els.modelMenu) return;
+    els.modelMenu.innerHTML = "";
+    const current = getModelValue();
+    for (const m of state.models) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "model-option";
+      btn.setAttribute("role", "option");
+      btn.dataset.id = m.id;
+      const selected = m.id === current;
+      btn.setAttribute("aria-selected", selected ? "true" : "false");
+      btn.innerHTML = `<span class="model-option-name"></span><svg class="model-option-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" aria-hidden="true"><path d="M5 12.5l5 5 9-10"/></svg>`;
+      btn.querySelector(".model-option-name").textContent = m.name || m.id;
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        setModelValue(m.id);
+        closeModelMenu();
+        if (els.modelSelectBtn) els.modelSelectBtn.focus();
+      });
+      els.modelMenu.appendChild(btn);
+    }
+  }
+
+  function setModelValue(id, { syncEfforts = true } = {}) {
+    const match = state.models.find((x) => x.id === id);
+    const next = match ? match.id : state.models[0]?.id || id || "grok-4.5";
+    const changed = state.selectedModel !== next;
+    state.selectedModel = next;
+    if (els.modelSelectLabel) els.modelSelectLabel.textContent = modelLabel(next);
+    if (els.modelSelectBtn) {
+      els.modelSelectBtn.title = `Model: ${modelLabel(next)}`;
+    }
+    renderModelMenu();
+    if (syncEfforts && changed) {
+      const m = state.models.find((x) => x.id === next);
+      if (m) populateEfforts(m);
+    }
+  }
+
+  function populateModels(models) {
+    state.models = Array.isArray(models) ? models : [];
+    const prev = state.selectedModel;
+    const keep = prev && state.models.find((x) => x.id === prev);
+    const next = keep ? keep.id : state.models[0]?.id;
+    if (next) setModelValue(next);
+    else {
+      state.selectedModel = null;
+      if (els.modelSelectLabel) els.modelSelectLabel.textContent = "Model";
+      renderModelMenu();
     }
   }
 
@@ -429,9 +532,52 @@
 
   els.effortSlider.addEventListener("input", updateEffortUI);
 
-  els.modelSelect.addEventListener("change", () => {
-    const m = state.models.find((x) => x.id === els.modelSelect.value);
-    populateEfforts(m);
+  if (els.modelSelectBtn) {
+    els.modelSelectBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleModelMenu();
+    });
+    els.modelSelectBtn.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        if (!state.modelMenuOpen) openModelMenu();
+      } else if (e.key === "Escape") {
+        closeModelMenu();
+      }
+    });
+  }
+  if (els.modelMenu) {
+    els.modelMenu.addEventListener("keydown", (e) => {
+      const options = [...els.modelMenu.querySelectorAll(".model-option")];
+      const idx = options.indexOf(document.activeElement);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeModelMenu();
+        if (els.modelSelectBtn) els.modelSelectBtn.focus();
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const next = options[Math.min(options.length - 1, idx + 1)] || options[0];
+        if (next) next.focus();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const prev = options[Math.max(0, idx - 1)] || options[options.length - 1];
+        if (prev) prev.focus();
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        if (options[0]) options[0].focus();
+      } else if (e.key === "End") {
+        e.preventDefault();
+        if (options.length) options[options.length - 1].focus();
+      }
+    });
+  }
+  document.addEventListener("click", (e) => {
+    if (!state.modelMenuOpen) return;
+    if (els.modelSelector && els.modelSelector.contains(e.target)) return;
+    closeModelMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && state.modelMenuOpen) closeModelMenu();
   });
 
   // ---------- Sessions ----------
@@ -1157,7 +1303,68 @@
   function updateSendEnabled() {
     const hasText = !!els.prompt.value.trim();
     const hasImg = state.attachments.length > 0;
-    els.btnSend.disabled = state.running || (!hasText && !hasImg);
+    els.btnSend.disabled = !hasText && !hasImg;
+    if (els.btnSend) {
+      els.btnSend.title = state.running && (hasText || hasImg)
+        ? "Queue follow-up (Enter) · Ctrl+Enter sends now"
+        : "Send (Enter)";
+    }
+  }
+
+  function queuePreview(item) {
+    const text = String(item.text || "").replace(/\s+/g, " ").trim();
+    const n = item.images?.length || 0;
+    if (text && n) return `${text} · ${n} image${n === 1 ? "" : "s"}`;
+    if (text) return text;
+    if (n) return `${n} image${n === 1 ? "" : "s"}`;
+    return "Follow-up";
+  }
+
+  function renderQueue() {
+    if (!els.queueStrip) return;
+    els.queueStrip.innerHTML = "";
+    if (!state.promptQueue.length) {
+      els.queueStrip.classList.add("hidden");
+      return;
+    }
+    els.queueStrip.classList.remove("hidden");
+    for (const item of state.promptQueue) {
+      const row = document.createElement("div");
+      row.className = "queue-item";
+      row.innerHTML =
+        `<span class="queue-item-mark">Queued</span>` +
+        `<span class="queue-item-text"></span>` +
+        `<button type="button" class="queue-item-remove" title="Remove" aria-label="Remove queued follow-up">×</button>`;
+      row.querySelector(".queue-item-text").textContent = queuePreview(item);
+      row.querySelector(".queue-item-remove").addEventListener("click", () => {
+        state.promptQueue = state.promptQueue.filter((q) => q.id !== item.id);
+        renderQueue();
+      });
+      els.queueStrip.appendChild(row);
+    }
+  }
+
+  function enqueueFollowUp({ text, images }) {
+    state.promptQueue.push({
+      id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      text: text || "",
+      images: Array.isArray(images) ? images.slice() : [],
+    });
+    renderQueue();
+  }
+
+  function clearPromptQueue() {
+    if (!state.promptQueue.length) return;
+    state.promptQueue = [];
+    renderQueue();
+  }
+
+  function drainPromptQueue() {
+    if (state.running || state.sendInFlight) return;
+    if (!state.promptQueue.length) return;
+    const next = state.promptQueue.shift();
+    renderQueue();
+    if (next) void sendPrompt({ queued: next });
   }
 
   function readFileAsDataUrl(file) {
@@ -1517,8 +1724,11 @@
     state.running = on;
     els.runningBar.classList.toggle("hidden", !on);
     if (text) els.runningText.textContent = text;
-    els.prompt.disabled = on;
-    if (els.btnAttach) els.btnAttach.disabled = on;
+    if (els.prompt) {
+      els.prompt.disabled = false;
+      els.prompt.placeholder = on ? "Type a follow-up to queue…" : "Type a message…";
+    }
+    if (els.btnAttach) els.btnAttach.disabled = false;
     updateSendEnabled();
     if (was !== on) renderSessionList();
   }
@@ -1582,10 +1792,10 @@
   /** Chat is never gated on picking a folder. Unlock + focus the composer. */
   function unlockPrompt({ focus = true } = {}) {
     if (!els.prompt) return;
-    if (!state.running && els.prompt.disabled) els.prompt.disabled = false;
-    if (els.btnAttach && !state.running) els.btnAttach.disabled = false;
+    if (els.prompt.disabled) els.prompt.disabled = false;
+    if (els.btnAttach) els.btnAttach.disabled = false;
     updateSendEnabled();
-    if (focus && !state.running) {
+    if (focus) {
       try {
         els.prompt.focus({ preventScroll: true });
       } catch {
@@ -1597,7 +1807,7 @@
   // ---------- Open session / new ----------
   function setActiveMeta(session) {
     if (!session) {
-      els.chatTitle.textContent = "New session";
+      els.chatTitle.textContent = state.sidechatMode ? "Side chat" : "New session";
       els.chatProject.textContent = "";
       els.sessionIdHint.textContent = "";
       return;
@@ -1608,32 +1818,32 @@
     if (session.cwd) setCwd(session.cwd);
     else if (!getCwd()) setCwd(guessDefaultCwd());
     if (session.model) {
-      const opt = [...els.modelSelect.options].find((o) => o.value === session.model);
-      if (opt) {
-        els.modelSelect.value = session.model;
-        const m = state.models.find((x) => x.id === session.model);
-        populateEfforts(m);
-      }
+      setModelValue(session.model);
     }
     if (session.effort) {
       setEffortValue(session.effort);
     }
   }
 
-  async function openSession(id) {
+  async function openSession(id, opts = {}) {
     if (state.selectMode) {
       toggleSessionSelected(id);
       return;
     }
     const sameLive =
-      state.running && state.streamSessionId === id && state.liveShell;
+      !opts.forceReload &&
+      state.running &&
+      state.streamSessionId === id &&
+      state.liveShell;
     if (!sameLive && (state.running || state.abortController)) {
       detachLiveTurn();
     }
+    const switchingAway = state.activeSessionId && state.activeSessionId !== id;
     setActiveSessionId(id);
     state.draftMode = false;
     expandProjectForSession(id);
     clearAttachments();
+    if (switchingAway) clearPromptQueue();
     document.body.classList.remove("sidebar-open");
     renderSessionList();
 
@@ -1683,7 +1893,7 @@
       clearMessages();
       const div = document.createElement("div");
       div.className = "empty-state";
-      div.innerHTML = `<h1>Couldn't load session</h1><p>${escapeHtml(err.message)}</p>`;
+      div.innerHTML = `<h1>Couldn't load session</h1><p>${escapeHtml(networkErrorMessage(err))}</p>`;
       els.messages.appendChild(div);
       unlockPrompt({ focus: true });
     }
@@ -1703,6 +1913,7 @@
     const cwd = (opts.cwd || rememberedCwd() || guessDefaultCwd() || "").trim();
     if (cwd) setCwd(cwd);
     clearAttachments();
+    clearPromptQueue();
     showEmptyState();
     renderSessionList();
     document.body.classList.remove("sidebar-open");
@@ -1734,6 +1945,111 @@
       .replace(/>/g, "&gt;");
   }
 
+  function stripSidechatParams(u) {
+    for (const key of ["parent", "cwd", "model", "effort", "btw"]) {
+      u.searchParams.delete(key);
+    }
+    // Keep ?side=1 so a reload stays a side-chat window (no last-session steal).
+    u.searchParams.set("side", "1");
+    try {
+      const clean =
+        u.pathname + (u.searchParams.toString() ? `?${u.searchParams}` : "") + u.hash;
+      window.history.replaceState({}, "", clean || "/");
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function readSidechatInit() {
+    let u;
+    try {
+      u = new URL(window.location.href);
+    } catch {
+      return null;
+    }
+    const sideParam = u.searchParams.get("side");
+    if (!sideParam) return null;
+
+    if (window.grokDesktop && typeof window.grokDesktop.getSidechatInit === "function") {
+      try {
+        const payload = await window.grokDesktop.getSidechatInit(sideParam);
+        if (payload && typeof payload === "object") {
+          stripSidechatParams(u);
+          return payload;
+        }
+      } catch {
+        /* fall through to query params */
+      }
+    }
+
+    const payload = {
+      parentSessionId: u.searchParams.get("parent") || null,
+      cwd: u.searchParams.get("cwd") || "",
+      model: u.searchParams.get("model") || "",
+      effort: u.searchParams.get("effort") || "",
+      prompt: u.searchParams.get("btw") || "",
+      parentTitle: "",
+    };
+    stripSidechatParams(u);
+    return payload;
+  }
+
+  function applySidechatChrome() {
+    state.sidechatMode = true;
+    document.body.classList.add("sidechat");
+    if (els.sidechatBadge) els.sidechatBadge.classList.remove("hidden");
+    if (els.chatTitle && (!els.chatTitle.textContent || els.chatTitle.textContent === "New session")) {
+      els.chatTitle.textContent = "Side chat";
+    }
+    try {
+      document.title = "Side chat — Grok Desktop";
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function openSidechat({ prompt = "" } = {}) {
+    const payload = {
+      parentSessionId: state.activeSessionId || null,
+      cwd: getCwd() || rememberedCwd() || "",
+      model: getModelValue(),
+      effort: getEffortValue(),
+      prompt: prompt || "",
+      parentTitle: (els.chatTitle && els.chatTitle.textContent) || "",
+    };
+
+    if (window.grokDesktop && typeof window.grokDesktop.openSidechat === "function") {
+      try {
+        const result = await window.grokDesktop.openSidechat(payload);
+        if (result && result.ok) return true;
+      } catch (err) {
+        console.warn("openSidechat failed", err);
+      }
+    }
+
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.set("side", "1");
+      if (payload.parentSessionId) u.searchParams.set("parent", payload.parentSessionId);
+      if (payload.cwd) u.searchParams.set("cwd", payload.cwd);
+      if (payload.model) u.searchParams.set("model", payload.model);
+      if (payload.effort) u.searchParams.set("effort", payload.effort);
+      if (payload.prompt) u.searchParams.set("btw", payload.prompt);
+      const opened = window.open(u.toString(), "_blank", "noopener,noreferrer");
+      if (opened) return true;
+    } catch {
+      /* popup blocked */
+    }
+
+    if (els.sessionBanner && els.sessionBannerText) {
+      els.sessionBannerText.textContent =
+        "Couldn't open a new window for /btw — allow pop-ups, or use the desktop app.";
+      els.sessionBanner.classList.remove("hidden", "ok");
+      els.sessionBanner.classList.add("warn");
+    }
+    return false;
+  }
+
   /** Local slash commands (TUI-style). Returns true if handled. */
   function handleSlashCommand(text) {
     const raw = text.trim();
@@ -1746,14 +2062,44 @@
       startNewSession({ cwd: rememberedCwd() || undefined });
       return true;
     }
+    if (cmd === "/btw") {
+      const rest = raw.slice(cmd.length).trim();
+      els.prompt.value = "";
+      autoResizePrompt();
+      clearAttachments();
+      void openSidechat({ prompt: rest });
+      return true;
+    }
     return false;
   }
 
+  async function interruptCurrentTurn() {
+    if (!state.running && !state.abortController) return;
+    const pending = state.turnDone;
+    const shell = state.liveShell;
+    await stopRun();
+    if (pending) {
+      try {
+        await pending;
+      } catch {
+        /* ignore */
+      }
+    }
+    if (shell && !shell.cancelledNote) {
+      appendShellWarning(shell, "Turn cancelled.");
+      shell.cancelledNote = true;
+    }
+  }
+
   // ---------- Send prompt (SSE) ----------
-  async function sendPrompt() {
-    const text = els.prompt.value.trim();
-    const pendingImages = state.attachments.slice();
-    if (state.running) return;
+  async function sendPrompt(opts = {}) {
+    const queued = opts.queued || null;
+    const sendNow = !!opts.sendNow;
+    const text = queued ? String(queued.text || "").trim() : els.prompt.value.trim();
+    const pendingImages = queued
+      ? (queued.images || []).slice()
+      : state.attachments.slice();
+    if (state.sendInFlight && !state.running) return;
     if (!state.setupReady) {
       setStatus(false, "Sign in required");
       showSetupGate();
@@ -1763,9 +2109,23 @@
     }
     if (!text && !pendingImages.length) return;
 
-    if (text && handleSlashCommand(text)) return;
+    if (!queued && text && handleSlashCommand(text)) return;
 
-    const model = els.modelSelect.value || "grok-4.5";
+    // CLI: plain Enter mid-turn queues; Ctrl+Enter is cancel-and-send.
+    if (!queued && (state.running || state.abortController) && !sendNow) {
+      enqueueFollowUp({ text, images: pendingImages });
+      els.prompt.value = "";
+      clearAttachments();
+      autoResizePrompt();
+      return;
+    }
+
+    if (!queued && sendNow && (state.running || state.abortController)) {
+      await interruptCurrentTurn();
+    }
+    if (state.sendInFlight) return;
+
+    const model = getModelValue();
     const effort = getEffortValue();
     const cwd = getCwd() || undefined;
     const active = getActiveSession();
@@ -1775,8 +2135,11 @@
       setActiveSessionId(null);
       state.draftMode = true;
     }
-    const isNew = state.draftMode || !state.activeSessionId || cwdMismatch;
+    const forkFrom = state.pendingForkFrom || null;
+    if (forkFrom) state.pendingForkFrom = null;
+    const isNew = state.draftMode || !state.activeSessionId || cwdMismatch || !!forkFrom;
 
+    state.sendInFlight = true;
     appendUserMessage(
       text,
       pendingImages.map((a) => a.dataUrl)
@@ -1790,13 +2153,16 @@
     const turnGen = nextTurnGen();
     setRunning(true, pendingImages.length ? "Uploading image…" : "Thinking…");
 
+    const clientTurnId = newClientTurnId();
     const body = {
       prompt: text,
       model,
       effort,
       newSession: isNew,
+      clientTurnId,
     };
     if (!isNew) body.sessionId = state.activeSessionId;
+    if (forkFrom) body.forkFrom = forkFrom;
     if (cwd) body.cwd = cwd;
     if (pendingImages.length) {
       body.images = pendingImages.map((a) => ({
@@ -1834,7 +2200,38 @@
 
     let sawDone = false;
     let aborted = false;
+    let deferred = false;
     let streamStarted = false;
+    let resolveTurn = null;
+    state.turnDone = new Promise((resolve) => {
+      resolveTurn = resolve;
+    });
+
+    const applyReconnectResult = async (rec, fallbackMessage) => {
+      if (!rec) return;
+      sawDone = !!rec.ok;
+      aborted = !!rec.aborted;
+      if (rec.deferred) {
+        deferred = true;
+        return;
+      }
+      if (rec.finished) {
+        const sid = rec.sessionId || gotSessionId;
+        if (sid) {
+          nextTurnGen();
+          await openSession(sid, { forceReload: true });
+          sawDone = true;
+          return;
+        }
+      }
+      if (!sawDone && !aborted) {
+        if (gotSessionId || clientTurnId) {
+          deferred = true;
+          return;
+        }
+        appendShellWarning(shell, fallbackMessage || "Connection lost.");
+      }
+    };
 
     try {
       const res = await fetch(apiUrl("/api/chat"), {
@@ -1857,52 +2254,60 @@
       streamStarted = true;
       sawDone = await readSseStream(res, shell, onSession, onGrokActivity);
 
-      if (!sawDone && !ac.signal.aborted && (state.runId || gotSessionId)) {
-        const rec = await tryReconnectRun({
-          runId: state.runId,
-          sessionId: gotSessionId,
-          shell,
-          onSession,
-          onGrokActivity,
-        });
-        sawDone = rec.ok;
-        aborted = rec.aborted;
-        if (!sawDone && !aborted) {
-          appendShellWarning(
+      if (!sawDone && !ac.signal.aborted && (state.runId || gotSessionId || clientTurnId)) {
+        await applyReconnectResult(
+          await tryReconnectRun({
+            runId: state.runId,
+            sessionId: gotSessionId,
+            clientTurnId,
             shell,
-            "Connection lost — could not reconnect to the live turn."
-          );
-        }
+            onSession,
+            onGrokActivity,
+          }),
+          "Connection lost — could not reconnect to the live turn."
+        );
       } else if (ac.signal.aborted) {
         aborted = true;
       }
     } catch (err) {
       if (err.name === "AbortError" || ac.signal.aborted) {
         aborted = true;
-      } else if (streamStarted || state.runId) {
-        const rec = await tryReconnectRun({
-          runId: state.runId,
-          sessionId: gotSessionId,
-          shell,
-          onSession,
-          onGrokActivity,
-        });
-        sawDone = rec.ok;
-        aborted = rec.aborted;
-        if (!sawDone && !aborted) {
-          appendShellWarning(shell, err.message || String(err));
-        }
+      } else if (streamStarted || state.runId || gotSessionId || clientTurnId) {
+        await applyReconnectResult(
+          await tryReconnectRun({
+            runId: state.runId,
+            sessionId: gotSessionId,
+            clientTurnId,
+            shell,
+            onSession,
+            onGrokActivity,
+          }),
+          networkErrorMessage(err)
+        );
       } else {
-        appendShellWarning(shell, err.message || String(err));
+        appendShellWarning(shell, networkErrorMessage(err));
       }
     } finally {
       clearInterval(heartbeat);
-      if (turnGen === state.turnGen) {
+      state.sendInFlight = false;
+      if (aborted) {
+        clearPendingReattach();
+        if (turnGen === state.turnGen) await finishTurn(gotSessionId);
+      } else if (deferred && !sawDone) {
+        armPendingReattach({
+          sessionId: gotSessionId,
+          clientTurnId,
+          startedAt: sendStarted,
+          turnGen,
+        });
+      } else if (turnGen === state.turnGen) {
+        if (sawDone) clearPendingReattach();
         await finishTurn(gotSessionId);
       } else if (gotSessionId) {
         state.liveSessionIds.add(gotSessionId);
         void refreshLiveRuns();
       }
+      if (resolveTurn) resolveTurn();
     }
   }
 
@@ -2044,16 +2449,270 @@
     }
   }
 
-  async function fetchActiveRun(sessionId) {
-    if (!sessionId) return null;
+  function newClientTurnId() {
     try {
-      const data = await api(`/api/runs?sessionId=${encodeURIComponent(sessionId)}`);
-      if (!data || data.run === null) return null;
-      if (data.runId) return data;
-      if (data.run && data.run.runId) return data.run;
-      return null;
+      if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID();
+      }
     } catch {
-      return null;
+      /* ignore */
+    }
+    return `ct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function isPageHidden() {
+    return typeof document.hidden === "boolean" ? document.hidden : false;
+  }
+
+  function networkErrorMessage(err) {
+    const raw = String((err && err.message) || err || "").trim();
+    const key = raw.toLowerCase();
+    if (
+      !raw ||
+      key === "load failed" ||
+      key === "failed to fetch" ||
+      key.includes("network connection was lost") ||
+      key.includes("the internet connection appears to be offline") ||
+      key.includes("networkerror")
+    ) {
+      return "Connection lost. The turn is still running on the PC — come back to this chat to resume.";
+    }
+    return raw;
+  }
+
+  function normalizeRun(data) {
+    if (!data || data.run === null) return null;
+    if (data.run && data.run.runId) {
+      return {
+        runId: data.run.runId,
+        sessionId: data.run.sessionId || data.sessionId || null,
+        startedAt: data.run.startedAt || data.startedAt || 0,
+        done: !!(data.run.done || data.done),
+        clientTurnId: data.run.clientTurnId || data.clientTurnId || null,
+      };
+    }
+    if (data.runId) {
+      return {
+        runId: data.runId,
+        sessionId: data.sessionId || null,
+        startedAt: data.startedAt || 0,
+        done: !!data.done,
+        clientTurnId: data.clientTurnId || null,
+      };
+    }
+    return null;
+  }
+
+  let pendingRecoverTimer = null;
+  let recoverWakeTimer = null;
+
+  function stopPendingRecoverTimer() {
+    if (pendingRecoverTimer) {
+      clearInterval(pendingRecoverTimer);
+      pendingRecoverTimer = null;
+    }
+  }
+
+  function clearPendingReattach() {
+    state.pendingReattach = null;
+    stopPendingRecoverTimer();
+  }
+
+  function armPendingReattach({ sessionId, clientTurnId, startedAt, turnGen }) {
+    state.pendingReattach = {
+      sessionId: sessionId || null,
+      clientTurnId: clientTurnId || null,
+      startedAt: startedAt || Date.now(),
+      turnGen: turnGen || state.turnGen,
+      attempts: 0,
+    };
+    if (sessionId) state.liveSessionIds.add(sessionId);
+    const msg = isPageHidden()
+      ? "Connection paused — will resume when you come back…"
+      : "Connection lost — retrying…";
+    setRunning(true, msg);
+    showReconnectStatus(msg, "info");
+    if (!pendingRecoverTimer) {
+      pendingRecoverTimer = setInterval(() => {
+        if (state.pendingReattach && !isPageHidden()) void recoverPendingTurn();
+      }, 5000);
+    }
+  }
+
+  function scheduleRecoverOnForeground() {
+    if (isPageHidden()) return;
+    if (recoverWakeTimer) clearTimeout(recoverWakeTimer);
+    recoverWakeTimer = setTimeout(() => {
+      recoverWakeTimer = null;
+      void recoverPendingTurn();
+    }, 200);
+  }
+
+  function bindForegroundResume() {
+    if (bindForegroundResume.bound) return;
+    bindForegroundResume.bound = true;
+    const onWake = () => scheduleRecoverOnForeground();
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("pageshow", onWake);
+    window.addEventListener("online", onWake);
+    window.addEventListener("focus", onWake);
+    document.addEventListener("resume", onWake);
+  }
+
+  async function lookupRun({ sessionId, clientTurnId, includeDone = false } = {}) {
+    try {
+      if (clientTurnId) {
+        const byTurn = normalizeRun(
+          await api(`/api/runs?clientTurnId=${encodeURIComponent(clientTurnId)}`)
+        );
+        if (byTurn) return byTurn;
+      }
+      if (sessionId) {
+        const q = new URLSearchParams({ sessionId });
+        if (includeDone) q.set("includeDone", "1");
+        return normalizeRun(await api(`/api/runs?${q}`));
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+
+  async function fetchActiveRun(sessionId, opts = {}) {
+    if (!sessionId && !opts.clientTurnId) return null;
+    return lookupRun({
+      sessionId,
+      clientTurnId: opts.clientTurnId,
+      includeDone: !!opts.includeDone,
+    });
+  }
+
+  async function recoverPendingTurn() {
+    if (isPageHidden() || state.recoverInFlight || !state.setupReady) return;
+    if (state.attachingRunId) return;
+    const pending = state.pendingReattach;
+    if (
+      !pending &&
+      state.running &&
+      state.liveShell &&
+      state.abortController &&
+      !state.abortController.signal.aborted
+    ) {
+      return;
+    }
+    if (!pending && !state.activeSessionId) return;
+
+    state.recoverInFlight = true;
+    try {
+      const sid = pending?.sessionId || state.activeSessionId;
+      const run = await lookupRun({
+        sessionId: sid,
+        clientTurnId: pending?.clientTurnId,
+        includeDone: true,
+      });
+
+      if (run?.runId && !run.done) {
+        const sessionId = run.sessionId || sid;
+        if (sessionId && state.activeSessionId && sessionId !== state.activeSessionId) {
+          state.liveSessionIds.add(sessionId);
+          return;
+        }
+        if (state.attachingRunId === run.runId) return;
+        const shell = state.liveShell || reuseOrAppendAssistantShell();
+        const turnGen = nextTurnGen();
+        if (pending) {
+          state.pendingReattach = { ...pending, sessionId, turnGen };
+        }
+        setRunning(true, "Reconnecting…");
+        showReconnectStatus("Reconnecting…", "info");
+        const onSession = (id) => applyStreamSession(id, shell);
+        try {
+          const first = await attachToRun(run.runId, { shell, sessionId, onSession });
+          let sawDone = first.sawDone;
+          let aborted = first.aborted;
+          if (!sawDone && !aborted) {
+            const rec = await tryReconnectRun({
+              runId: run.runId,
+              sessionId,
+              clientTurnId: pending?.clientTurnId || run.clientTurnId,
+              shell,
+              onSession,
+            });
+            sawDone = rec.ok;
+            aborted = rec.aborted;
+            if (rec.deferred) return;
+            if (rec.finished) {
+              clearPendingReattach();
+              if (turnGen === state.turnGen) {
+                await openSession(rec.sessionId || sessionId, { forceReload: true });
+              }
+              return;
+            }
+          }
+          if (aborted) {
+            // Stop already cleared pending; session switch should keep it.
+            return;
+          }
+          if (sawDone || turnGen === state.turnGen) {
+            clearPendingReattach();
+            if (turnGen === state.turnGen) await finishTurn(sessionId);
+          }
+        } catch (err) {
+          if (err.name === "AbortError") return;
+          if (isPageHidden()) return;
+          appendShellWarning(shell, networkErrorMessage(err));
+        }
+        return;
+      }
+
+      if (!pending) return;
+
+      pending.attempts = (pending.attempts || 0) + 1;
+      const age = Date.now() - (pending.startedAt || 0);
+      const sessionToLoad = (run && run.sessionId) || sid;
+
+      if (!sessionToLoad) {
+        if (age < 60000) return;
+        clearPendingReattach();
+        await finishTurn(null);
+        return;
+      }
+
+      if (age < 15000 && !run?.done) return;
+
+      await refreshSessions();
+      const sess = state.sessions.find((s) => s.id === sessionToLoad);
+      const updated = sess?.updatedAt ? Date.parse(sess.updatedAt) : 0;
+      const serverWorked = !!run?.done || updated >= (pending.startedAt || 0) - 2000;
+
+      if (!serverWorked && age < 15000) return;
+
+      clearPendingReattach();
+      if (state.running || state.abortController) {
+        nextTurnGen();
+        state.abortController = null;
+        state.liveShell = null;
+        state.attachingRunId = null;
+        state.runId = null;
+        setRunning(false);
+        hideReconnectStatus();
+      }
+
+      if (serverWorked) {
+        await openSession(sessionToLoad, { forceReload: true });
+        return;
+      }
+
+      const shell = state.liveShell;
+      if (shell) {
+        appendShellWarning(
+          shell,
+          "Connection lost. If Grok never started, send the message again."
+        );
+      }
+      await finishTurn(sessionToLoad);
+    } finally {
+      state.recoverInFlight = false;
     }
   }
 
@@ -2160,15 +2819,18 @@
   async function tryReconnectRun({
     runId,
     sessionId,
+    clientTurnId,
     shell,
     onSession,
     onGrokActivity,
   }) {
-    const delays = [1000, 2000, 3000];
+    if (isPageHidden()) return { ok: false, deferred: true };
+    const delays = [800, 1600, 2800];
     for (let i = 0; i < delays.length; i++) {
       if (state.abortController?.signal?.aborted) {
         return { ok: false, aborted: true };
       }
+      if (isPageHidden()) return { ok: false, deferred: true };
       showReconnectStatus(`Reconnecting… (${i + 1}/3)`, "info");
       setRunning(true, `Reconnecting… (${i + 1}/3)`);
       try {
@@ -2176,18 +2838,23 @@
       } catch (err) {
         if (err.name === "AbortError") return { ok: false, aborted: true };
       }
+      if (isPageHidden()) return { ok: false, deferred: true };
 
-      let id = runId;
-      if (sessionId) {
-        const active = await fetchActiveRun(sessionId);
-        if (active?.runId) id = active.runId;
+      const found = await lookupRun({
+        sessionId,
+        clientTurnId,
+        includeDone: true,
+      });
+      if (found?.done) {
+        return { ok: false, finished: true, sessionId: found.sessionId || sessionId };
       }
+      let id = found?.runId || runId;
       if (!id) continue;
 
       try {
         const result = await attachToRun(id, {
           shell,
-          sessionId,
+          sessionId: found?.sessionId || sessionId,
           onSession,
           onGrokActivity,
         });
@@ -2196,13 +2863,17 @@
         if (result.attached) runId = id;
       } catch (err) {
         if (err.name === "AbortError") return { ok: false, aborted: true };
+        if (isPageHidden()) return { ok: false, deferred: true };
       }
     }
+    if (isPageHidden()) return { ok: false, deferred: true };
+    if (sessionId || clientTurnId) return { ok: false, deferred: true };
     return { ok: false, aborted: false };
   }
 
   async function maybeAttachActiveRun(sessionId) {
-    if (!sessionId || state.running) return;
+    if (!sessionId || state.attachingRunId) return;
+    if (state.running && !state.pendingReattach) return;
     const active = await fetchActiveRun(sessionId);
     if (!active?.runId) return;
     if (state.running || state.activeSessionId !== sessionId) return;
@@ -2221,26 +2892,33 @@
     setRunning(true, "Reconnecting…");
     showReconnectStatus("Reconnecting…", "info");
 
+    let deferred = false;
     try {
       const first = await attachToRun(active.runId, {
         shell,
         sessionId,
         onSession,
       });
+      if (first.sawDone) clearPendingReattach();
       if (!first.sawDone && !first.aborted) {
-        await tryReconnectRun({
+        const rec = await tryReconnectRun({
           runId: active.runId,
           sessionId,
+          clientTurnId: state.pendingReattach?.clientTurnId,
           shell,
           onSession,
         });
+        if (rec.ok || rec.finished) clearPendingReattach();
+        if (rec.deferred) deferred = true;
       }
     } catch (err) {
       if (err.name !== "AbortError") {
-        appendShellWarning(shell, err.message || "Reconnect failed");
+        appendShellWarning(shell, networkErrorMessage(err));
       }
     } finally {
-      if (turnGen === state.turnGen) {
+      if (deferred) {
+        if (sessionId) state.liveSessionIds.add(sessionId);
+      } else if (turnGen === state.turnGen) {
         await finishTurn(sessionId);
       } else if (sessionId) {
         state.liveSessionIds.add(sessionId);
@@ -2415,6 +3093,7 @@
   }
 
   async function finishTurn(sessionId) {
+    clearPendingReattach();
     hideReconnectStatus();
     setRunning(false);
     if (sessionId) state.liveSessionIds.delete(sessionId);
@@ -2431,6 +3110,7 @@
     renderSessionList();
     unlockPrompt({ focus: true });
     refreshUsage();
+    drainPromptQueue();
   }
 
   function handleSseBlock(raw, shell, onSession, onGrokActivity) {
@@ -2536,11 +3216,36 @@
             ? "⚠️ Turn cancelled."
             : "⚠️ Stopped at the token limit.";
         appendShellWarning(shell, note.replace(/^⚠️\s*/, ""));
+        if (reason === "cancelled") shell.cancelledNote = true;
       }
     }
   }
 
   async function stopRun() {
+    const pending = state.pendingReattach;
+    let runId = state.runId;
+    let sessionId = state.streamSessionId || state.activeSessionId || pending?.sessionId;
+    const clientTurnId = pending?.clientTurnId;
+    clearPendingReattach();
+    if (!runId && !sessionId && !clientTurnId) {
+      try {
+        await sleep(150);
+      } catch {
+        /* ignore */
+      }
+      runId = state.runId;
+      sessionId = state.streamSessionId || state.activeSessionId;
+    }
+    if (runId || sessionId || clientTurnId) {
+      try {
+        await api("/api/chat/cancel", {
+          method: "POST",
+          body: JSON.stringify({ runId, sessionId, clientTurnId }),
+        });
+      } catch {
+        /* ignore */
+      }
+    }
     if (state.abortController) {
       try {
         state.abortController.abort();
@@ -2548,14 +3253,8 @@
         /* ignore */
       }
     }
-    if (!state.runId) return;
-    try {
-      await api("/api/chat/cancel", {
-        method: "POST",
-        body: JSON.stringify({ runId: state.runId }),
-      });
-    } catch {
-      /* ignore */
+    if (!state.sendInFlight) {
+      await finishTurn(sessionId);
     }
   }
 
@@ -2578,7 +3277,6 @@
     });
   }
   document.addEventListener("keydown", (e) => {
-    if (state.running) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === "Tab" || e.key === "Escape") return;
     const tag = (e.target && e.target.tagName) || "";
@@ -2587,7 +3285,9 @@
     if (
       e.target &&
       e.target.closest &&
-      e.target.closest("#sidebar, .modal, .context-menu, #setup-gate, #folder-picker-backdrop")
+      e.target.closest(
+        "#sidebar, .modal, .context-menu, #setup-gate, #folder-picker-backdrop, #account-popover"
+      )
     ) {
       return;
     }
@@ -2598,9 +3298,18 @@
   });
 
   els.prompt.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && state.running) {
+      e.preventDefault();
+      void stopRun();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      sendPrompt();
+      if ((e.ctrlKey || e.metaKey) && state.running) {
+        sendPrompt({ sendNow: true });
+      } else {
+        sendPrompt();
+      }
     }
   });
 
@@ -2623,7 +3332,6 @@
 
   if (els.btnAttach && els.fileAttach) {
     els.btnAttach.addEventListener("click", () => {
-      if (state.running) return;
       els.fileAttach.click();
     });
     els.fileAttach.addEventListener("change", () => {
@@ -2827,6 +3535,39 @@
     }
   }
 
+  if (els.btnAccount) {
+    els.btnAccount.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const open = els.accountPopover && els.accountPopover.classList.contains("hidden");
+      setAccountPopoverOpen(open);
+    });
+  }
+  if (els.btnAccountLoginX) {
+    els.btnAccountLoginX.addEventListener("click", () => {
+      startSignIn({ method: "x" });
+    });
+  }
+  if (els.btnAccountLoginEmail) {
+    els.btnAccountLoginEmail.addEventListener("click", () => {
+      startSignIn({ method: "email" });
+    });
+  }
+  if (els.btnAccountLogout) {
+    els.btnAccountLogout.addEventListener("click", () => {
+      logoutAccount();
+    });
+  }
+  document.addEventListener("click", (e) => {
+    if (!els.accountPopover || els.accountPopover.classList.contains("hidden")) return;
+    if (e.target.closest && e.target.closest(".account-wrap")) return;
+    setAccountPopoverOpen(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && els.accountPopover && !els.accountPopover.classList.contains("hidden")) {
+      setAccountPopoverOpen(false);
+    }
+  });
+
   els.btnRemote.addEventListener("click", async () => {
     els.modalBackdrop.classList.remove("hidden");
     await loadRemoteInfo();
@@ -2867,6 +3608,120 @@
     });
   }
 
+  // ---------- Account bubble (sidebar footer) ----------
+  function accountInitialsFrom(auth) {
+    const email = String((auth && auth.email) || "").trim();
+    const name = String((auth && auth.firstName) || "").trim();
+    if (name && /\s/.test(name)) {
+      const parts = name.split(/\s+/).filter(Boolean);
+      const a = parts[0] && parts[0][0];
+      const b = parts[1] && parts[1][0];
+      if (a) return (a + (b || "")).toUpperCase();
+    }
+    if (email.includes("@")) {
+      const local = email.split("@")[0].replace(/[^a-zA-Z0-9]/g, "");
+      if (local.length >= 2) return local.slice(0, 2).toUpperCase();
+      if (local.length === 1) return (local + (name[0] || "")).toUpperCase();
+    }
+    if (name.length >= 2) {
+      const caps = name.match(/[A-Z]/g);
+      if (caps && caps.length >= 2) return (caps[0] + caps[1]).toUpperCase();
+      return name.slice(0, 2).toUpperCase();
+    }
+    if (name) return name[0].toUpperCase();
+    return "?";
+  }
+
+  function accountDisplayName(auth) {
+    const name = String((auth && auth.firstName) || "").trim();
+    if (name) return name;
+    const email = String((auth && auth.email) || "").trim();
+    if (email.includes("@")) return email.split("@")[0];
+    if (email) return email;
+    return "Grok account";
+  }
+
+  function setAccountPopoverOpen(open) {
+    if (!els.accountPopover || !els.btnAccount) return;
+    els.accountPopover.classList.toggle("hidden", !open);
+    els.accountPopover.setAttribute("aria-hidden", open ? "false" : "true");
+    els.btnAccount.setAttribute("aria-expanded", open ? "true" : "false");
+    if (els.accountPopHint && !open) els.accountPopHint.textContent = "";
+  }
+
+  function updateAccountUi(setup) {
+    const auth = (setup && setup.auth) || {};
+    const signedIn = !!(setup && (setup.ready || auth.valid));
+    const initials = signedIn ? accountInitialsFrom(auth) : "?";
+    if (els.accountInitials) els.accountInitials.textContent = initials;
+    if (els.accountPopAvatar) els.accountPopAvatar.textContent = initials;
+    if (els.btnAccount) {
+      els.btnAccount.classList.toggle("unsigned", !signedIn);
+      const label = signedIn
+        ? `${accountDisplayName(auth)}${auth.email ? ` (${auth.email})` : ""}`
+        : "Account — sign in";
+      els.btnAccount.title = label;
+      els.btnAccount.setAttribute("aria-label", signedIn ? `Account: ${label}` : "Account");
+    }
+    if (els.accountPopName) {
+      els.accountPopName.textContent = signedIn ? accountDisplayName(auth) : "Not signed in";
+    }
+    if (els.accountPopEmail) {
+      els.accountPopEmail.textContent = signedIn ? auth.email || "" : "";
+    }
+    if (els.btnAccountLogout) {
+      els.btnAccountLogout.disabled = !signedIn;
+      els.btnAccountLogout.classList.toggle("hidden", !signedIn);
+      const sep = els.btnAccountLogout.previousElementSibling;
+      if (sep && sep.classList.contains("context-menu-sep")) {
+        sep.classList.toggle("hidden", !signedIn);
+      }
+    }
+    if (els.btnAccountLoginX) {
+      els.btnAccountLoginX.textContent = signedIn ? "Switch to X account" : "Sign in with X";
+    }
+    if (els.btnAccountLoginEmail) {
+      els.btnAccountLoginEmail.textContent = signedIn
+        ? "Switch to email account"
+        : "Sign in with email";
+    }
+  }
+
+  async function logoutAccount() {
+    setAccountPopoverOpen(false);
+    if (state.running) {
+      try {
+        await api("/api/chat/cancel", {
+          method: "POST",
+          body: JSON.stringify({ runId: state.runId }),
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+    if (els.accountPopHint) els.accountPopHint.textContent = "Signing out…";
+    try {
+      await api("/api/auth/logout", { method: "POST", body: "{}" });
+    } catch (err) {
+      if (els.accountPopHint) {
+        els.accountPopHint.textContent = err.message || "Logout failed";
+      }
+      setStatus(false, err.message || "Logout failed");
+      setAccountPopoverOpen(true);
+      return;
+    }
+    state.setupReady = false;
+    state.setup = {
+      ready: false,
+      installed: true,
+      auth: { present: false, valid: false, reason: "missing", email: null, firstName: null },
+      login: { running: false },
+    };
+    updateAccountUi(state.setup);
+    setStatus(false, "Signed out");
+    await checkSetupAndBoot({ force: true });
+  }
+
   // ---------- Setup gate (Install CLI / Sign in) ----------
   /**
    * Prefer /api/setup. If the running desktop process is older than the static UI
@@ -2904,7 +3759,7 @@
         ready: false,
         error: meta.setupError || "Health check failed",
         installed: false,
-        auth: { present: false, valid: false, reason: "unknown", email: null },
+        auth: { present: false, valid: false, reason: "unknown", email: null, firstName: null },
         login: { running: false },
       };
     }
@@ -2922,6 +3777,7 @@
           valid: !!(health.authenticated || health.ready),
           reason: health.authenticated || health.ready ? "ok" : "missing",
           email: health.authEmail || null,
+          firstName: health.authFirstName || null,
         },
         login: { running: false },
         fromHealth: true,
@@ -2941,6 +3797,7 @@
         valid: true,
         reason: "ok",
         email: health.authEmail || null,
+        firstName: health.authFirstName || null,
       },
       login: { running: false },
       fromHealth: true,
@@ -3032,6 +3889,7 @@
 
   function renderSetupGate(setup) {
     state.setup = setup;
+    updateAccountUi(setup);
     showSetupGate();
 
     if (!setup || setup.error) {
@@ -3059,6 +3917,7 @@
       state.setupReady = true;
       hideSetupGate();
       stopLoginPoll();
+      updateAccountUi(setup);
       return;
     }
 
@@ -3126,14 +3985,21 @@
       : authReasonLabel(setup.auth?.reason);
 
     if (login.running) {
+      const method = login.method || state.loginMethod;
+      const methodHint =
+        method === "email"
+          ? "In the browser, choose Sign in with email and enter your Grok email and password."
+          : "In the browser, choose Sign in with X (your X / Twitter account).";
       setSetupChrome({
-        title: "Sign in with Grok",
+        title: method === "email" ? "Sign in with email" : "Sign in with X",
         message:
           "Complete sign-in in the browser window that opened on this computer. This screen will unlock automatically when auth is ready.",
-        detailsHtml: `<div>${escapeHtml(emailHint)}</div>`,
+        detailsHtml: `<div>${escapeHtml(emailHint)}</div><div style="margin-top:6px">${escapeHtml(
+          methodHint
+        )}</div>`,
         hint: isMobileViewport()
-          ? "You’re on a phone — finish OAuth on the PC running Grok Desktop."
-          : "If no browser opened, run <code>grok login</code> in a terminal.",
+          ? "You’re on a phone — finish sign-in on the PC running Grok Desktop."
+          : "If no browser opened, run <code>grok login --oauth</code> in a terminal.",
         actions: [
           {
             label: "Signing in…",
@@ -3172,24 +4038,30 @@
       !setup.auth?.valid;
 
     setSetupChrome({
-      title: "Sign in with Grok",
+      title: "Sign in to Grok",
       message: failed
-        ? "Sign-in didn’t finish. Try again — this opens the same OAuth browser flow as the CLI."
-        : "You’re not signed in yet. Use your Grok account (same as the CLI).",
+        ? "Sign-in didn’t finish. Try again — pick X or email, matching the Grok account you use."
+        : "You’re not signed in yet. Use X or email/password, depending on your Grok account.",
       detailsHtml: `<div>${escapeHtml(emailHint)}</div>${
         failed && login.error
           ? `<div style="margin-top:6px;color:var(--danger)">${escapeHtml(login.error)}</div>`
           : ""
       }`,
       hint: isMobileViewport()
-        ? "Sign-in runs on the PC hosting this app; your phone only triggers it."
-        : "Uses <code>grok login --oauth</code> under the hood.",
+        ? "Sign-in runs on the PC hosting this app; your phone only triggers it. Finish in the browser on the PC."
+        : "Opens the Grok sign-in page (<code>grok login --oauth</code>). Choose X or email there.",
       actions: [
         {
-          label: "Sign in with Grok",
+          label: "Sign in with X",
           primary: true,
-          id: "btn-setup-login",
-          onClick: () => startSignIn(),
+          id: "btn-setup-login-x",
+          onClick: () => startSignIn({ method: "x" }),
+        },
+        {
+          label: "Sign in with email",
+          primary: false,
+          id: "btn-setup-login-email",
+          onClick: () => startSignIn({ method: "email" }),
         },
         {
           label: "Recheck",
@@ -3217,6 +4089,7 @@
           state.setupReady = true;
           hideSetupGate();
           setStatus(true, setup.auth?.email ? `Signed in as ${setup.auth.email}` : "Connected");
+          updateAccountUi(setup);
           await continueBootAfterSetup(setup);
           return;
         }
@@ -3232,17 +4105,35 @@
     }, 1500);
   }
 
-  async function startSignIn() {
+  async function startSignIn({ method = "x", replace = false } = {}) {
+    const useEmail = method === "email";
+    state.loginMethod = useEmail ? "email" : "x";
+    setAccountPopoverOpen(false);
+    const title = useEmail ? "Sign in with email" : "Sign in with X";
+    const startingHint = useEmail
+      ? "Starting sign-in… in the browser, choose Sign in with email."
+      : "Starting sign-in… in the browser, choose Sign in with X.";
     try {
+      if (replace && state.setupReady) {
+        try {
+          await api("/api/auth/logout", { method: "POST", body: "{}" });
+        } catch {
+          /* still try to start login */
+        }
+        state.setupReady = false;
+      }
+      showSetupGate();
       setSetupChrome({
-        title: "Sign in with Grok",
-        message: "Starting OAuth… a browser window should open on this computer.",
+        title,
+        message: startingHint,
         actions: [{ label: "Starting…", primary: true, disabled: true }],
-        hint: "",
+        hint: isMobileViewport()
+          ? "Finish in the browser on the PC running Grok Desktop."
+          : "",
       });
       await api("/api/auth/login", {
         method: "POST",
-        body: JSON.stringify({ oauth: true }),
+        body: JSON.stringify({ oauth: true, method: state.loginMethod }),
       });
       const setup = await fetchSetupStatus();
       renderSetupGate(setup);
@@ -3250,18 +4141,24 @@
       else {
         state.setupReady = true;
         hideSetupGate();
+        updateAccountUi(setup);
         await continueBootAfterSetup(setup);
       }
     } catch (err) {
       setSetupChrome({
-        title: "Sign in with Grok",
+        title,
         message: err.message || "Could not start login.",
-        hint: "You can also run <code>grok login</code> in a terminal, then Recheck. If this just updated, fully quit and relaunch Grok Desktop on the PC.",
+        hint: "You can also run <code>grok login --oauth</code> in a terminal, then Recheck. If this just updated, fully quit and relaunch Grok Desktop on the PC.",
         actions: [
           {
             label: "Try again",
             primary: true,
-            onClick: () => startSignIn(),
+            onClick: () => startSignIn({ method: state.loginMethod || "x" }),
+          },
+          {
+            label: useEmail ? "Sign in with X instead" : "Sign in with email instead",
+            primary: false,
+            onClick: () => startSignIn({ method: useEmail ? "x" : "email" }),
           },
           {
             label: "Recheck",
@@ -3292,6 +4189,8 @@
       } else {
         setStatus(true, "Connected");
       }
+      updateAccountUi(setup || state.setup);
+      refreshUsage();
       return;
     }
     bootContinued = true;
@@ -3304,6 +4203,7 @@
       } else {
         setStatus(true, "Connected");
       }
+      if (setup) updateAccountUi(setup);
     } catch (err) {
       setStatus(false, err.message || "Offline");
     }
@@ -3317,15 +4217,44 @@
 
     await refreshSessions();
     if (!getCwd()) setCwd(rememberedCwd() || guessDefaultCwd());
-    const lastId = readLastSessionId();
-    const found = lastId && state.sessions.some((s) => s.id === lastId);
-    if (found) {
-      await openSession(lastId);
+
+    if (state.pendingSidechat) {
+      applySidechatChrome();
+      const init = state.pendingSidechat;
+      if (init.cwd) setCwd(init.cwd);
+      if (init.model) setModelValue(init.model);
+      if (init.effort) setEffortValue(init.effort);
+      startNewSession({
+        cwd: init.cwd || rememberedCwd() || undefined,
+        preserveLast: true,
+      });
+      if (els.chatTitle) els.chatTitle.textContent = "Side chat";
+      state.pendingForkFrom = init.parentSessionId || null;
+      if (init.prompt) {
+        els.prompt.value = init.prompt;
+        autoResizePrompt();
+        unlockPrompt({ focus: true });
+        refreshUsage();
+        setTimeout(() => {
+          void sendPrompt();
+        }, 40);
+      } else {
+        unlockPrompt({ focus: true });
+        refreshUsage();
+      }
     } else {
-      startNewSession({ preserveLast: !!(lastId && state.sessions.length === 0) });
+      const lastId = readLastSessionId();
+      const found = lastId && state.sessions.some((s) => s.id === lastId);
+      if (found) {
+        await openSession(lastId);
+      } else {
+        startNewSession({ preserveLast: !!(lastId && state.sessions.length === 0) });
+      }
+      unlockPrompt({ focus: true });
+      refreshUsage();
     }
-    unlockPrompt({ focus: true });
-    refreshUsage();
+
+    bindForegroundResume();
 
     if (!sessionRefreshTimer) {
       sessionRefreshTimer = setInterval(() => {
@@ -3358,6 +4287,7 @@
         state.setupReady = true;
         hideSetupGate();
         stopLoginPoll();
+        updateAccountUi(setup);
         await continueBootAfterSetup(setup);
         return setup;
       }
@@ -3378,6 +4308,12 @@
   // ---------- Boot ----------
   async function boot() {
     readTokenFromUrl();
+    try {
+      state.pendingSidechat = await readSidechatInit();
+    } catch {
+      state.pendingSidechat = null;
+    }
+    if (state.pendingSidechat) applySidechatChrome();
     if (isMobileViewport()) {
       document.body.classList.add("is-mobile");
       // Ensure help modal never blocks the chat on first paint
