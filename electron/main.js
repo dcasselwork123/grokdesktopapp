@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, shell, ipcMain, dialog } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, dialog, Menu } = require("electron");
 const path = require("path");
 const { randomUUID } = require("crypto");
 const { createServer } = require("../server/httpApi");
@@ -234,11 +234,61 @@ function buildUiUrl({ sideNonce } = {}) {
   return u.toString();
 }
 
+function installAppMenu() {
+  const isMac = process.platform === "darwin";
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      ...(isMac ? [{ role: "appMenu" }] : []),
+      {
+        label: "Edit",
+        submenu: [
+          { role: "undo" },
+          { role: "redo" },
+          { type: "separator" },
+          { role: "cut" },
+          { role: "copy" },
+          { role: "paste" },
+          { role: "selectAll" },
+        ],
+      },
+    ])
+  );
+}
+
+function attachSelectionContextMenu(win) {
+  win.webContents.on("context-menu", (_event, params) => {
+    const items = [];
+    if (params.isEditable) {
+      items.push(
+        { role: "cut", enabled: params.editFlags.canCut },
+        { role: "copy", enabled: params.editFlags.canCopy },
+        { role: "paste", enabled: params.editFlags.canPaste },
+        { type: "separator" },
+        { role: "selectAll" }
+      );
+    } else if (params.selectionText && params.selectionText.trim()) {
+      items.push({ role: "copy" });
+    }
+    if (params.linkURL) {
+      if (items.length) items.push({ type: "separator" });
+      items.push({
+        label: "Open link",
+        click: () => {
+          shell.openExternal(params.linkURL);
+        },
+      });
+    }
+    if (!items.length) return;
+    Menu.buildFromTemplate(items).popup({ window: win });
+  });
+}
+
 function attachCommonWindowHandlers(win) {
   win.webContents.setWindowOpenHandler(({ url: target }) => {
     shell.openExternal(target);
     return { action: "deny" };
   });
+  attachSelectionContextMenu(win);
   attachWindowGuards(win);
 }
 
@@ -343,6 +393,7 @@ if (gotTheLock) {
 
   app.whenReady().then(async () => {
     try {
+      installAppMenu();
       const { url } = await startApi();
       createWindow(url);
     } catch (err) {

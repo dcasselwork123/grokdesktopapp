@@ -71,6 +71,12 @@ IPC: `electron/main.js` → `pick-folder`; `electron/preload.js` → `grokDeskto
 
 Other TUI slash commands (`/compact`, `/theme`, …) are **not** implemented in the desktop app; they would only be sent as plain text if typed.
 
+### Copy transcript text
+
+- Highlight text in the chat and **Ctrl+C** / **Cmd+C** (or right-click **Copy** on desktop).
+- A plain click in the transcript still focuses the composer; a drag-select does **not**, so the highlight stays copyable.
+- Desktop: Electron Edit menu + native context menu (copy/cut/paste in the composer too).
+
 ### In-app updates (GitHub)
 
 If this folder is a git checkout of the app, the sidebar footer can show **Update available** under the account/status row when `origin/main` is ahead.
@@ -185,7 +191,7 @@ GrokDesktop/
 ├── screenshots/            ← e.g. mobileview.png
 │
 ├── electron/
-│   ├── main.js             ← BrowserWindow + HTTP API + pick-folder IPC
+│   ├── main.js             ← BrowserWindow + HTTP API + pick-folder IPC + copy/edit menu
 │   └── preload.js          ← grokDesktop.isElectron / getApiInfo / pickFolder
 │
 ├── server/
@@ -228,6 +234,7 @@ UI (Electron or Safari)
 | Mobile new-session projects | `renderer/app.js`, `renderer/index.html` (folder-picker modal) |
 | Tailscale / token / bind | `server/remoteAccess.js`, `electron/main.js`, `server/httpApi.js` |
 | Launch / window startup | `electron/main.js`, `Start Grok Desktop.*` |
+| **Copy chat text (Ctrl+C)** | `electron/main.js` (Edit menu + context menu), `renderer/app.js`, `renderer/styles.css` |
 | **In-app GitHub update** | `server/appUpdate.js`, `server/httpApi.js`, `electron/main.js`, `renderer/app.js` + `index.html` + `styles.css` |
 | First-time deps | `package.json` only if needed; prefer existing electron install |
 

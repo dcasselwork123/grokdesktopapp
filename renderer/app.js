@@ -3283,15 +3283,101 @@
 
   els.prompt.addEventListener("input", autoResizePrompt);
 
+  function promptHasOwnSelection() {
+    const el = els.prompt;
+    if (!el || document.activeElement !== el) return false;
+    return typeof el.selectionStart === "number" && el.selectionStart !== el.selectionEnd;
+  }
+
+  function selectionIsInside(sel, node) {
+    if (!sel || !node || !sel.rangeCount) return false;
+    try {
+      return node.contains(sel.anchorNode) && node.contains(sel.focusNode);
+    } catch {
+      return false;
+    }
+  }
+
+  function getSelectedTranscriptText() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
+    const text = String(sel.toString() || "");
+    if (!text) return "";
+    if (els.prompt && selectionIsInside(sel, els.prompt)) return "";
+    if (els.messages && !selectionIsInside(sel, els.messages)) {
+      // Allow a selection that starts in a message and ends in padding/parent.
+      const anchorIn = els.messages.contains(sel.anchorNode);
+      const focusIn = els.messages.contains(sel.focusNode);
+      if (!anchorIn && !focusIn) return "";
+    }
+    return text;
+  }
+
+  async function copyTextToClipboard(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand("copy");
+        ta.remove();
+        return ok;
+      } catch {
+        return false;
+      }
+    }
+  }
+
   // Clicking the transcript (or typing while it has focus) should land in the
-  // composer — same as a normal chat app. Folder is never a prerequisite.
+  // composer — same as a normal chat app. Do not steal focus after a drag-select
+  // so Ctrl+C / right-click Copy can use the highlighted text.
+  let transcriptPointer = null;
   if (els.messages) {
+    els.messages.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      transcriptPointer = { x: e.clientX, y: e.clientY };
+    });
     els.messages.addEventListener("click", (e) => {
       if (e.target.closest("a, button, input, textarea, select")) return;
+      const dragged =
+        transcriptPointer &&
+        (Math.abs(e.clientX - transcriptPointer.x) > 4 ||
+          Math.abs(e.clientY - transcriptPointer.y) > 4);
+      transcriptPointer = null;
+      if (dragged || getSelectedTranscriptText()) {
+        try {
+          els.messages.focus({ preventScroll: true });
+        } catch {
+          els.messages.focus();
+        }
+        return;
+      }
       unlockPrompt({ focus: true });
     });
   }
+  document.addEventListener("copy", (e) => {
+    if (promptHasOwnSelection()) return;
+    const text = getSelectedTranscriptText();
+    if (!text || !e.clipboardData) return;
+    e.clipboardData.setData("text/plain", text);
+    e.preventDefault();
+  });
   document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "c" || e.key === "C")) {
+      if (promptHasOwnSelection()) return;
+      const text = getSelectedTranscriptText();
+      if (!text) return;
+      e.preventDefault();
+      void copyTextToClipboard(text);
+      return;
+    }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === "Tab" || e.key === "Escape") return;
     const tag = (e.target && e.target.tagName) || "";

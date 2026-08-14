@@ -1043,6 +1043,12 @@ body.select-mode .session-item .check {
   overflow-y: auto;
   padding: 24px 0 16px;
   scroll-behavior: smooth;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.messages:focus {
+  outline: none;
 }
 
 .msg {
@@ -1058,12 +1064,18 @@ body.select-mode .session-item .check {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text);
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
 }
 
 .msg.assistant .body {
   color: var(--assistant-text);
   white-space: pre-wrap;
   word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
 }
 
 .msg.assistant .body :is(p, ul, ol, pre, blockquote, .md-table-wrap) {
