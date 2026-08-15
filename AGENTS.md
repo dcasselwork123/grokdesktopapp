@@ -80,6 +80,22 @@ Persist as `permissionMode` in `~/.grok-desktop/config.json`. Do not take a perm
 - Status bar updates during image turns (launching → running → tool/thinking → writing). Client heartbeat + 45s no-output watchdog if Grok stalls.
 - Optional debug log: `~/.grok-desktop/debug.log`.
 
+### Voice dictation
+
+Claude Desktop–style **mic** next to Send. Click to record, click again to stop; Grok Speech-to-Text fills the composer. Esc cancels. Does **not** auto-send.
+
+| | |
+|--|--|
+| **API** | `POST https://api.x.ai/v1/stt` via our `POST /api/stt` (CSP is `connect-src 'self'`) |
+| **Auth** | Same `~/.grok/auth.json` access key as billing (`getAccountAccessKey`), or `XAI_API_KEY` |
+| **Audio** | Client records PCM, encodes **WAV** 16 kHz mono, sends base64 JSON. Do not persist clips. |
+| **Desktop** | Electron must allow `media` / microphone for the API origin (`electron/main.js` → `installMediaPermissions`) |
+| **Phone** | Hidden unless the page is a secure context (`https` or localhost). Tailscale `http://100.x` is not secure, so Safari will not open the mic. |
+
+Never return the STT API key to the client. Max clip ~3 minutes / 8 MB. Empty transcript → “Didn’t catch that”.
+
+Server: `server/speechToText.js`. UI: `renderer/app.js` + composer mic in `index.html`.
+
 ### Slash commands (app-handled)
 
 | Command | Behavior |
@@ -220,8 +236,9 @@ GrokDesktop/
 │
 ├── server/
 │   ├── index.js            ← standalone server entry (no Electron)
-│   ├── httpApi.js          ← REST + SSE chat + static UI + token/cookie auth + /api/setup + /api/auth/login
+│   ├── httpApi.js          ← REST + SSE chat + static UI + token/cookie auth + /api/setup + /api/auth/login + /api/stt
 │   ├── grokService.js      ← sessions, models, spawn grok -p, image save, setup/auth/login
+│   ├── speechToText.js     ← Grok STT (POST /v1/stt) using CLI auth or XAI_API_KEY
 │   ├── appUpdate.js        ← git fetch (30 min) + pull / npm install / restart
 │   ├── remoteAccess.js     ← config, token, Tailscale IP, phone URL
 │   └── externalUrl.js      ← http(s)-only openExternal; API-origin navigation
@@ -229,7 +246,7 @@ GrokDesktop/
 └── renderer/               ← same UI for desktop window + phone browser
     ├── index.html          ← CSP meta, setup gate, composer, folder control, attach UI, modals
     ├── styles.css          ← desktop + mobile chat layout + setup gate
-    └── app.js              ← setup gate boot, sessions, SSE, folder/images, mobile drawer
+    └── app.js              ← setup gate boot, sessions, SSE, folder/images, voice dictation, mobile drawer
 ```
 
 ### Data flow (short)
@@ -242,6 +259,7 @@ UI (Electron or Safari)
   → when ready:
        HTTP/SSE  server/httpApi.js
        → (optional) save images → ~/.grok-desktop/uploads/
+       → (optional) POST /api/stt → Grok Speech-to-Text → insert in composer
        → spawn     grok -p --output-format streaming-json [--resume id]
                    (+ image paths embedded in -p text when attachments present)
        → sessions  ~/.grok/sessions/<cwd>/<id>/
@@ -258,6 +276,7 @@ UI (Electron or Safari)
 | Access control / first-seen folder | `server/grokService.js` (`buildArgs`), `server/remoteAccess.js`, composer in `renderer/` |
 | External links / CSP / will-navigate | `server/externalUrl.js`, `electron/main.js` (`attachCommonWindowHandlers`), `renderer/index.html` `<head>` |
 | Images / attachments | `renderer/app.js`, `server/httpApi.js`, `server/grokService.js` |
+| Voice dictation | `server/speechToText.js`, `server/httpApi.js` (`POST /api/stt`), `renderer/app.js` + mic in `index.html` / `styles.css`, `electron/main.js` (`installMediaPermissions`) |
 | Mobile new-session projects | `renderer/app.js`, `renderer/index.html` (folder-picker modal) |
 | Tailscale / token / bind | `server/remoteAccess.js`, `electron/main.js`, `server/httpApi.js` |
 | Launch / window startup | `electron/main.js`, `Start Grok Desktop.*` |

@@ -141,6 +141,10 @@
         </div>
         <div id="attach-strip" class="attach-strip hidden" aria-label="Attached images"></div>
         <div id="queue-strip" class="queue-strip hidden" aria-label="Queued follow-ups"></div>
+        <div id="voice-strip" class="voice-strip hidden" role="status" aria-live="polite">
+          <span class="voice-dot" aria-hidden="true"></span>
+          <span id="voice-strip-text">Listening…</span>
+        </div>
         <div class="composer-box">
           <button type="button" id="btn-attach" class="btn-attach" title="Add image" aria-label="Add image">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
@@ -161,6 +165,12 @@
             autocomplete="off"
             spellcheck="true"
           ></textarea>
+          <button type="button" id="btn-mic" class="btn-mic hidden" title="Dictate" aria-label="Dictate" aria-pressed="false">
+            <svg class="mic-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" />
+            </svg>
+          </button>
           <button id="btn-send" class="btn-send" title="Send (Enter)" disabled>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
               <path d="M5 12h14M13 6l6 6-6 6" />

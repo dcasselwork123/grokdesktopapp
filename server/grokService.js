@@ -1850,4 +1850,5 @@ module.exports = {
   createSessionId,
   getStatus,
   getUsageSnapshot,
+  getAccountAccessKey,
 };

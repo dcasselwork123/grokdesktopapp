@@ -20,6 +20,7 @@ const {
   renameSession,
   getUsageSnapshot,
 } = require("./grokService");
+const { transcribeAudio } = require("./speechToText");
 const {
   buildRemoteInfo,
   normalizeRemoteAddress,
@@ -929,6 +930,60 @@ async function createServer({
         } catch (err) {
           const status = err.code === "NOT_FOUND" ? 404 : 500;
           sendJson(res, status, { error: err.message || String(err) }, extraHeaders);
+        }
+        return;
+      }
+
+      if (pathname === "/api/stt" && req.method === "POST") {
+        let body;
+        try {
+          body = await readBody(req, { maxBytes: 12 * 1024 * 1024 });
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            {
+              error:
+                err.message === "Body too large"
+                  ? "Audio too large"
+                  : "Invalid JSON body",
+            },
+            extraHeaders
+          );
+          return;
+        }
+
+        if (!isLoopbackRequest(req)) {
+          try {
+            chatRateLimiter.check(presented || req.socket.remoteAddress);
+          } catch (err) {
+            sendJson(
+              res,
+              err && err.status ? err.status : 429,
+              { error: (err && err.message) || String(err) },
+              extraHeaders
+            );
+            return;
+          }
+        }
+
+        try {
+          const result = await transcribeAudio({
+            data: body.audio || body.data || body.base64,
+            mimeType: body.mimeType || body.type || "audio/wav",
+            language: body.language || "en",
+          });
+          sendJson(res, 200, result, extraHeaders);
+        } catch (err) {
+          sendJson(
+            res,
+            err && err.status ? err.status : 500,
+            {
+              error: (err && err.message) || "Transcription failed",
+              code: (err && err.code) || null,
+            },
+            extraHeaders
+          );
         }
         return;
       }

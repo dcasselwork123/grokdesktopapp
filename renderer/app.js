@@ -15,6 +15,9 @@
     fileAttach: $("#file-attach"),
     attachStrip: $("#attach-strip"),
     queueStrip: $("#queue-strip"),
+    btnMic: $("#btn-mic"),
+    voiceStrip: $("#voice-strip"),
+    voiceStripText: $("#voice-strip-text"),
     prompt: $("#prompt"),
     messages: $("#messages"),
     chatTitle: $("#chat-title"),
@@ -139,6 +142,18 @@
     accessMenuOpen: false,
     seenFolders: [],
     seenFoldersLocal: [],
+    voice: {
+      phase: "idle", // idle | recording | transcribing
+      startedAt: 0,
+      timer: null,
+      stream: null,
+      ctx: null,
+      processor: null,
+      source: null,
+      mute: null,
+      chunks: [],
+      sampleRate: 16000,
+    },
   };
 
   // Preferred left→right order for the effort slider (unknown ids sort last)
@@ -154,6 +169,8 @@
   // Keep attachments small so vision is fast and uploads stay reliable
   const MAX_IMAGE_EDGE = 1280;
   const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+  const VOICE_MAX_SECONDS = 180;
+  const VOICE_TARGET_RATE = 16000;
   const LAST_SESSION_KEY = "grok_desktop_last_session";
   const LAST_CWD_KEY = "grok_desktop_last_cwd";
   const MD_DEBOUNCE_MS = 64;
@@ -2381,6 +2398,13 @@
       else checkSetupAndBoot({ force: true });
       return;
     }
+    if (!queued && state.voice.phase === "recording") {
+      if (!text && !pendingImages.length) {
+        await stopVoice({ transcribe: true });
+        return;
+      }
+      await stopVoice({ transcribe: false });
+    }
     if (!text && !pendingImages.length) return;
 
     if (!queued && text && handleSlashCommand(text)) return;
@@ -3536,6 +3560,328 @@
     }
   }
 
+  // ---------- Voice dictation (Grok Speech-to-Text) ----------
+  function voiceDictationSupported() {
+    return !!(
+      window.isSecureContext &&
+      navigator.mediaDevices &&
+      typeof navigator.mediaDevices.getUserMedia === "function" &&
+      (window.AudioContext || window.webkitAudioContext)
+    );
+  }
+
+  function formatVoiceClock(ms) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
+  function updateVoiceUi() {
+    const phase = state.voice.phase;
+    const btn = els.btnMic;
+    const strip = els.voiceStrip;
+    const label = els.voiceStripText;
+    if (!btn) return;
+    btn.classList.toggle("hidden", !voiceDictationSupported());
+    btn.classList.toggle("recording", phase === "recording");
+    btn.classList.toggle("transcribing", phase === "transcribing");
+    btn.setAttribute("aria-pressed", phase === "recording" ? "true" : "false");
+    btn.disabled = phase === "transcribing" || !state.setupReady;
+    if (phase === "recording") {
+      btn.title = "Stop dictation";
+      btn.setAttribute("aria-label", "Stop dictation");
+    } else if (phase === "transcribing") {
+      btn.title = "Transcribing…";
+      btn.setAttribute("aria-label", "Transcribing");
+    } else {
+      btn.title = "Dictate with Grok";
+      btn.setAttribute("aria-label", "Dictate");
+    }
+    if (strip) {
+      strip.classList.toggle("hidden", phase === "idle");
+      strip.classList.toggle("transcribing", phase === "transcribing");
+    }
+    if (label) {
+      if (phase === "recording") {
+        const elapsed = Date.now() - (state.voice.startedAt || Date.now());
+        label.textContent = `Listening ${formatVoiceClock(elapsed)} · tap mic to stop · Esc cancels`;
+      } else if (phase === "transcribing") {
+        label.textContent = "Transcribing with Grok…";
+      }
+    }
+    if (els.prompt && phase !== "idle") {
+      els.prompt.placeholder =
+        phase === "recording" ? "Listening…" : "Transcribing…";
+    } else if (els.prompt && !state.running) {
+      els.prompt.placeholder = "Type a message…";
+    }
+  }
+
+  function insertTranscript(text) {
+    const t = String(text || "").trim();
+    if (!t || !els.prompt) return;
+    const el = els.prompt;
+    const cur = el.value || "";
+    const start = typeof el.selectionStart === "number" ? el.selectionStart : cur.length;
+    const end = typeof el.selectionEnd === "number" ? el.selectionEnd : cur.length;
+    const before = cur.slice(0, start);
+    const after = cur.slice(end);
+    const spaceBefore = before && !/\s$/.test(before) ? " " : "";
+    const spaceAfter = after && !/^\s/.test(after) ? " " : "";
+    const piece = spaceBefore + t + spaceAfter;
+    el.value = before + piece + after;
+    const caret = (before + piece).length;
+    try {
+      el.selectionStart = el.selectionEnd = caret;
+    } catch {
+      /* ignore */
+    }
+    autoResizePrompt();
+    unlockPrompt({ focus: true });
+  }
+
+  function downsampleVoice(float32, inputRate, targetRate) {
+    if (!float32 || !float32.length) return new Float32Array(0);
+    if (!inputRate || inputRate === targetRate) return float32;
+    const ratio = inputRate / targetRate;
+    const outLen = Math.max(1, Math.round(float32.length / ratio));
+    const out = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const src = i * ratio;
+      const i0 = Math.floor(src);
+      const i1 = Math.min(i0 + 1, float32.length - 1);
+      const t = src - i0;
+      out[i] = float32[i0] * (1 - t) + float32[i1] * t;
+    }
+    return out;
+  }
+
+  function encodeWavPcm16(float32, sampleRate) {
+    const n = float32.length;
+    const buffer = new ArrayBuffer(44 + n * 2);
+    const view = new DataView(buffer);
+    const writeStr = (offset, str) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    };
+    writeStr(0, "RIFF");
+    view.setUint32(4, 36 + n * 2, true);
+    writeStr(8, "WAVE");
+    writeStr(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, "data");
+    view.setUint32(40, n * 2, true);
+    let offset = 44;
+    for (let i = 0; i < n; i++) {
+      const s = Math.max(-1, Math.min(1, float32[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      offset += 2;
+    }
+    return new Blob([buffer], { type: "audio/wav" });
+  }
+
+  async function blobToBase64(blob) {
+    const buf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    const chunk = 0x8000;
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+
+  function stopVoiceTracks() {
+    const v = state.voice;
+    if (v.timer) {
+      clearInterval(v.timer);
+      v.timer = null;
+    }
+    try {
+      if (v.processor) v.processor.disconnect();
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (v.source) v.source.disconnect();
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (v.mute) v.mute.disconnect();
+    } catch {
+      /* ignore */
+    }
+    if (v.stream) {
+      for (const track of v.stream.getTracks()) {
+        try {
+          track.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    const ctx = v.ctx;
+    v.processor = null;
+    v.source = null;
+    v.mute = null;
+    v.stream = null;
+    v.ctx = null;
+    if (ctx && ctx.state !== "closed") {
+      try {
+        ctx.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  function collectVoiceSamples() {
+    const chunks = state.voice.chunks || [];
+    let total = 0;
+    for (const c of chunks) total += c.length;
+    const merged = new Float32Array(total);
+    let offset = 0;
+    for (const c of chunks) {
+      merged.set(c, offset);
+      offset += c.length;
+    }
+    return downsampleVoice(merged, state.voice.sampleRate, VOICE_TARGET_RATE);
+  }
+
+  async function startVoice() {
+    if (!voiceDictationSupported()) {
+      setStatus(false, "Voice input needs a secure window (desktop app or localhost)");
+      return;
+    }
+    if (!state.setupReady) {
+      setStatus(false, "Sign in required");
+      showSetupGate();
+      return;
+    }
+    if (state.voice.phase !== "idle") return;
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          channelCount: 1,
+        },
+      });
+    } catch (err) {
+      const name = err && err.name;
+      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+        setStatus(false, "Microphone permission denied");
+      } else if (name === "NotFoundError") {
+        setStatus(false, "No microphone found");
+      } else {
+        setStatus(false, (err && err.message) || "Could not open microphone");
+      }
+      return;
+    }
+
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AC();
+    try {
+      if (ctx.state === "suspended") await ctx.resume();
+    } catch {
+      /* ignore */
+    }
+    const source = ctx.createMediaStreamSource(stream);
+    const processor = ctx.createScriptProcessor(4096, 1, 1);
+    const mute = ctx.createGain();
+    mute.gain.value = 0;
+    const chunks = [];
+    processor.onaudioprocess = (e) => {
+      const input = e.inputBuffer.getChannelData(0);
+      chunks.push(new Float32Array(input));
+    };
+    source.connect(processor);
+    processor.connect(mute);
+    mute.connect(ctx.destination);
+
+    state.voice.phase = "recording";
+    state.voice.startedAt = Date.now();
+    state.voice.stream = stream;
+    state.voice.ctx = ctx;
+    state.voice.source = source;
+    state.voice.processor = processor;
+    state.voice.mute = mute;
+    state.voice.chunks = chunks;
+    state.voice.sampleRate = ctx.sampleRate || VOICE_TARGET_RATE;
+    state.voice.timer = setInterval(() => {
+      updateVoiceUi();
+      const elapsed = (Date.now() - state.voice.startedAt) / 1000;
+      if (elapsed >= VOICE_MAX_SECONDS) {
+        void stopVoice({ transcribe: true });
+      }
+    }, 250);
+    updateVoiceUi();
+  }
+
+  async function stopVoice({ transcribe = true } = {}) {
+    if (state.voice.phase !== "recording") return;
+    const samples = collectVoiceSamples();
+    stopVoiceTracks();
+    state.voice.chunks = [];
+
+    if (!transcribe) {
+      state.voice.phase = "idle";
+      updateVoiceUi();
+      return;
+    }
+
+    if (!samples.length) {
+      state.voice.phase = "idle";
+      updateVoiceUi();
+      setStatus(false, "Didn't catch that — try again");
+      return;
+    }
+
+    state.voice.phase = "transcribing";
+    updateVoiceUi();
+    try {
+      const wav = encodeWavPcm16(samples, VOICE_TARGET_RATE);
+      const audio = await blobToBase64(wav);
+      const result = await api("/api/stt", {
+        method: "POST",
+        body: JSON.stringify({
+          audio,
+          mimeType: "audio/wav",
+          language: "en",
+        }),
+      });
+      const text = result && result.text ? String(result.text).trim() : "";
+      if (!text) {
+        setStatus(false, "Didn't catch that — try again");
+      } else {
+        insertTranscript(text);
+      }
+    } catch (err) {
+      setStatus(false, (err && err.message) || "Transcription failed");
+    } finally {
+      state.voice.phase = "idle";
+      updateVoiceUi();
+    }
+  }
+
+  async function toggleVoice() {
+    if (state.voice.phase === "transcribing") return;
+    if (state.voice.phase === "recording") {
+      await stopVoice({ transcribe: true });
+      return;
+    }
+    await startVoice();
+  }
+
   // ---------- Prompt box ----------
   function autoResizePrompt() {
     const el = els.prompt;
@@ -3662,6 +4008,11 @@
   });
 
   els.prompt.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && state.voice.phase === "recording") {
+      e.preventDefault();
+      void stopVoice({ transcribe: false });
+      return;
+    }
     if (e.key === "Escape" && state.running) {
       e.preventDefault();
       void stopRun();
@@ -3693,6 +4044,12 @@
       addImageFiles(imageFiles);
     }
   });
+
+  if (els.btnMic) {
+    els.btnMic.addEventListener("click", () => {
+      void toggleVoice();
+    });
+  }
 
   if (els.btnAttach && els.fileAttach) {
     els.btnAttach.addEventListener("click", () => {
@@ -4230,7 +4587,11 @@
       auth: { present: false, valid: false, reason: "missing", email: null, firstName: null },
       login: { running: false },
     };
+    if (state.voice.phase === "recording") {
+      void stopVoice({ transcribe: false });
+    }
     updateAccountUi(state.setup);
+    updateVoiceUi();
     setStatus(false, "Signed out");
     await checkSetupAndBoot({ force: true });
   }
@@ -4759,6 +5120,7 @@
   let sessionRefreshTimer = null;
 
   async function continueBootAfterSetup(setup) {
+    updateVoiceUi();
     if (bootContinued) {
       // Already booted once — just refresh after late login
       try {
@@ -5079,6 +5441,7 @@
         hideSetupGate();
         stopLoginPoll();
         updateAccountUi(setup);
+        updateVoiceUi();
         await continueBootAfterSetup(setup);
         return setup;
       }
@@ -5111,6 +5474,7 @@
       els.modalBackdrop.classList.add("hidden");
     }
     applyDesktopOnlyComposerChrome();
+    updateVoiceUi();
     await checkSetupAndBoot();
   }
 

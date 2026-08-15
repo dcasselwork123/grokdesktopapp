@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, shell, ipcMain, dialog, Menu } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, dialog, Menu, session } = require("electron");
 const path = require("path");
 const { randomUUID } = require("crypto");
 const { createServer } = require("../server/httpApi");
@@ -345,6 +345,36 @@ function shouldAllowNavigation(win, nextUrl) {
   }
 }
 
+function installMediaPermissions() {
+  const ses = session.defaultSession;
+  const allowForUrl = (url) => {
+    if (!url) return false;
+    return isAllowedApiNavigation(url);
+  };
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+    if (permission === "media" || permission === "mediaKeySystem") {
+      const url =
+        (details && details.requestingUrl) || (wc && !wc.isDestroyed() && wc.getURL()) || "";
+      callback(permission === "media" && allowForUrl(url));
+      return;
+    }
+    callback(false);
+  });
+  if (typeof ses.setPermissionCheckHandler === "function") {
+    ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details) => {
+      if (permission === "media" || permission === "microphone") {
+        const url =
+          requestingOrigin ||
+          (details && details.requestingUrl) ||
+          (wc && !wc.isDestroyed() && wc.getURL()) ||
+          "";
+        return allowForUrl(url);
+      }
+      return false;
+    });
+  }
+}
+
 function attachCommonWindowHandlers(win) {
   win.webContents.setWindowOpenHandler(({ url: target }) => {
     if (isSafeExternalUrl(target)) {
@@ -462,6 +492,7 @@ if (gotTheLock) {
     try {
       installAppMenu();
       const { url } = await startApi();
+      installMediaPermissions();
       createWindow(url);
     } catch (err) {
       showFatal(err);
@@ -472,6 +503,7 @@ if (gotTheLock) {
       if (BrowserWindow.getAllWindows().length === 0) {
         try {
           const { url } = await startApi();
+          installMediaPermissions();
           createWindow(url);
         } catch (err) {
           showFatal(err);

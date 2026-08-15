@@ -1555,6 +1555,85 @@ body.select-mode .session-item .check {
   cursor: default;
 }
 
+.btn-mic {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s, opacity 0.12s;
+}
+
+.btn-mic:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.btn-mic:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.btn-mic.recording {
+  color: #fff;
+  background: var(--danger);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+.btn-mic.recording:hover {
+  color: #fff;
+  background: #c85a5a;
+}
+
+.btn-mic.transcribing {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.voice-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 2px 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(224, 112, 112, 0.28);
+  border-radius: 10px;
+  background: rgba(224, 112, 112, 0.1);
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+.voice-strip.hidden {
+  display: none;
+}
+
+.voice-strip.transcribing {
+  border-color: rgba(153, 102, 203, 0.28);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.voice-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 #prompt {
   flex: 1;
   background: transparent;
@@ -2528,7 +2607,8 @@ body.select-mode .session-item .check {
     width: 100%;
   }
 
-  .btn-send {
+  .btn-send,
+  .btn-mic {
     width: 40px;
     height: 40px;
   }
