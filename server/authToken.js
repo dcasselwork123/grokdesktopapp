@@ -22,8 +22,10 @@ function tokensEqual(presented, expected) {
   return crypto.timingSafeEqual(a, b);
 }
 
-function cookieHeader(token) {
-  return `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`;
+function cookieHeader(token, { secure = false } = {}) {
+  let header = `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`;
+  if (secure) header += "; Secure";
+  return header;
 }
 
 function parseCookies(req) {

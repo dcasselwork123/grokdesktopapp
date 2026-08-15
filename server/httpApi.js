@@ -1,6 +1,7 @@
 "use strict";
 
 const http = require("http");
+const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const {
@@ -30,6 +31,8 @@ const {
   resolveAccessSettings,
   setAllowLan,
   detectTailscaleIpSync,
+  detectTailscaleStatusSync,
+  ensureTailscaleHttpsCert,
   getLanIpv4,
   rotateToken,
   toPublicRemoteInfo,
@@ -514,6 +517,8 @@ async function createServer({
   let allInterfacesServer = null;
   let tailscaleServer = null;
   let tailscaleListenIp = null;
+  let tailscaleHttps = false;
+  let tailscaleDnsName = null;
   let remote = null;
   const servers = [];
   let rebindLock = Promise.resolve();
@@ -540,9 +545,15 @@ async function createServer({
       host: boundHost,
       allowLan: currentAllowLan,
       tailscaleIp: currentTailscaleIp,
+      tailscaleDns: tailscaleDnsName,
+      httpsPhone: tailscaleHttps,
       lanIpv4:
         currentAllowLan && typeof getLanIpv4 === "function" ? getLanIpv4() : null,
     });
+  }
+
+  function isHttpsRequest(req) {
+    return !!(req && req.socket && req.socket.encrypted);
   }
 
   function attachConnectionFilter(srv) {
@@ -564,8 +575,14 @@ async function createServer({
     return srv;
   }
 
-  async function tryListenExtra(listenHost, kind) {
-    const srv = makeHttpServer();
+  function makeHttpsServer(tlsOpts) {
+    const srv = https.createServer(tlsOpts, handleRequest);
+    attachConnectionFilter(srv);
+    return srv;
+  }
+
+  async function tryListenExtra(listenHost, kind, tlsOpts) {
+    const srv = tlsOpts ? makeHttpsServer(tlsOpts) : makeHttpServer();
     try {
       await listenOn(srv, boundPort, listenHost);
       return srv;
@@ -610,6 +627,15 @@ async function createServer({
       currentTailscaleIp = detectTailscaleIpSync() || null;
     }
 
+    const tsStatus = detectTailscaleStatusSync();
+    if (!currentTailscaleIp && tsStatus.ip) currentTailscaleIp = tsStatus.ip;
+    tailscaleDnsName = tsStatus.dnsName || null;
+    const tlsMaterial =
+      tsStatus.httpsEligible && tsStatus.dnsName
+        ? ensureTailscaleHttpsCert(tsStatus.dnsName)
+        : null;
+    const wantHttps = Boolean(tlsMaterial);
+
     const plan = getListenPlan({
       allowLan: currentAllowLan,
       tailscaleIp: currentTailscaleIp,
@@ -621,6 +647,7 @@ async function createServer({
         await closeHttpServer(tailscaleServer);
         tailscaleServer = null;
         tailscaleListenIp = null;
+        tailscaleHttps = false;
       }
       if (!allInterfacesServer) {
         allInterfacesServer = await tryListenExtra("0.0.0.0", "all");
@@ -636,15 +663,35 @@ async function createServer({
           await closeHttpServer(tailscaleServer);
           tailscaleServer = null;
           tailscaleListenIp = null;
+          tailscaleHttps = false;
         }
-      } else if (!tailscaleServer || tailscaleListenIp !== wantTs) {
+      } else if (
+        !tailscaleServer ||
+        tailscaleListenIp !== wantTs ||
+        tailscaleHttps !== wantHttps
+      ) {
         if (tailscaleServer) {
           await closeHttpServer(tailscaleServer);
           tailscaleServer = null;
           tailscaleListenIp = null;
+          tailscaleHttps = false;
         }
-        tailscaleServer = await tryListenExtra(wantTs, "tailscale");
+        const tlsOpts = wantHttps
+          ? { cert: tlsMaterial.cert, key: tlsMaterial.key }
+          : null;
+        tailscaleServer = await tryListenExtra(wantTs, "tailscale", tlsOpts);
+        let usingHttps = !!(tailscaleServer && tlsOpts);
+        if (!tailscaleServer && tlsOpts) {
+          tailscaleServer = await tryListenExtra(wantTs, "tailscale", null);
+          usingHttps = false;
+        }
         tailscaleListenIp = tailscaleServer ? wantTs : null;
+        tailscaleHttps = usingHttps;
+        if (tailscaleHttps) {
+          console.log(
+            `[httpApi] Tailscale HTTPS on ${wantTs}:${boundPort} (${tsStatus.dnsName})`
+          );
+        }
       }
     }
 
@@ -670,6 +717,7 @@ async function createServer({
       await closeHttpServer(tailscaleServer);
       tailscaleServer = null;
       tailscaleListenIp = null;
+      tailscaleHttps = false;
     }
     if (loopbackServer) {
       await closeHttpServer(loopbackServer);
@@ -686,7 +734,9 @@ async function createServer({
     const extraHeaders = {};
     // One-time Safari bootstrap: mint HttpOnly cookie when the query token matches.
     if (currentToken && tokensEqual(queryToken, currentToken)) {
-      extraHeaders["Set-Cookie"] = cookieHeader(currentToken);
+      extraHeaders["Set-Cookie"] = cookieHeader(currentToken, {
+        secure: isHttpsRequest(req),
+      });
     }
 
     const authorized =
@@ -878,7 +928,9 @@ async function createServer({
         const result = rotateToken();
         currentToken = result.token;
         remote = currentRemoteInfo();
-        extraHeaders["Set-Cookie"] = cookieHeader(currentToken);
+        extraHeaders["Set-Cookie"] = cookieHeader(currentToken, {
+        secure: isHttpsRequest(req),
+      });
         sendJson(res, 200, result, extraHeaders);
         return;
       }

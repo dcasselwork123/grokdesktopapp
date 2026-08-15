@@ -56,8 +56,12 @@ test("cookieHeader does not include SameSite=Lax", () => {
   assert.ok(!cookieHeader("tok").includes("SameSite=Lax"));
 });
 
-test("cookieHeader does not include Secure", () => {
+test("cookieHeader does not include Secure by default", () => {
   assert.ok(!cookieHeader("tok").includes("Secure"));
+});
+
+test("cookieHeader adds Secure when requested", () => {
+  assert.ok(cookieHeader("tok", { secure: true }).includes("Secure"));
 });
 
 test("presentedToken query wins over header and cookie", () => {

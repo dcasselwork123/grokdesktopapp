@@ -91,7 +91,7 @@ Claude Desktop–style **mic** next to Send. Click to record, click again to sto
 | **Auth** | Same `~/.grok/auth.json` access key as billing (`getAccountAccessKey`), or `XAI_API_KEY`. Never expose the key to the client. |
 | **Audio** | Live: 16 kHz PCM16 chunks (~100 ms). Phone file fallback: Voice Memo / audio file via `POST /api/stt`. Do not persist clips. |
 | **Desktop** | Electron must allow `media` / microphone for the API origin (`electron/main.js` → `installMediaPermissions`) |
-| **Phone** | Mic is shown. Live `getUserMedia` needs a secure context (`https` or localhost) — Tailscale `http://100.x` is not secure, so Safari cannot open the live mic. In that case the button opens a file picker (Voice Memo / audio) and batch-transcribes. |
+| **Phone** | Prefer the **HTTPS** phone URL (`https://*.ts.net`, free Tailscale/Let’s Encrypt). Then the live mic works in Chrome/Safari, including “desktop site” / home-screen mode. On plain `http://100.x` the browser will not open the mic; the button falls back to a file picker. |
 
 Max clip ~3 minutes / 8 MB. Empty transcript → “Didn’t catch that”.
 
@@ -135,6 +135,7 @@ Server: `server/appUpdate.js`. Restart hook: `electron/main.js` → `onAppRestar
 - `GET /api/health` does **not** return the raw token. `GET /api/remote` returns the copyable phone URL **only on loopback**.
 - 📱 **Rotate phone access** (PC modal) mints a new token; existing phone tabs need the new URL.
 - Default bind is `127.0.0.1` plus the Tailscale `100.x` address — **not** `0.0.0.0`. LAN is opt-in via 📱 **Allow LAN (trusted network)** (or `GROK_DESKTOP_ALLOW_LAN=1` / `GROK_DESKTOP_HOST=0.0.0.0`).
+- **Phone HTTPS (free):** if the tailnet has HTTPS Certificates enabled, the app runs `tailscale cert` and serves TLS on the Tailscale socket. The copyable phone URL is `https://<machine>.<tailnet>.ts.net:<port>/?token=…` (Let’s Encrypt, no paid cert). That is a secure context, so the live mic works in iPhone Chrome/Safari. Cert files live in `~/.grok-desktop/certs/` (never commit). If HTTPS is not enabled on the tailnet, the URL stays `http://100.x` and the mic falls back to a Voice Memo / file picker.
 - Phone cannot `POST /api/update` or start/cancel OAuth (`POST /api/auth/login`). Finish sign-in and apply updates on the PC, then reload Safari / Recheck.
 - Mobile: model/effort in composer; folder via **New → project picker** (known project folders or last desktop folder — not a free-form `C:\` path); images via phone file picker / photos.
 
@@ -205,7 +206,7 @@ npm.cmd run server       # node server/index.js → http://127.0.0.1:3847
 
 **Requirements:** Node 18+. Grok CLI + sign-in are checked at startup (see **Startup setup gate** above). Fresh clones: user installs CLI and/or clicks **Sign in with Grok** — no shared account secrets in the repo.
 
-**Config / remote:** `~/.grok-desktop/config.json` (token, host, port, `allowLan`, `permissionMode`, `seenFolders`, last desktop cwd). Default bind is `127.0.0.1` + Tailscale `100.x` (not `0.0.0.0`). Phone URL = PC Tailscale IP + port + `?token=…` (📱 copies it when Tailscale is up; no LAN fallback unless Allow LAN is on). Auth: loopback open; remote `?token=` is a one-time Safari bootstrap, then an HttpOnly SameSite=Strict cookie. API fetches do not put the token in the query string and do not keep it in localStorage.
+**Config / remote:** `~/.grok-desktop/config.json` (token, host, port, `allowLan`, `permissionMode`, `seenFolders`, last desktop cwd). Default bind is `127.0.0.1` + Tailscale `100.x` (not `0.0.0.0`). Phone URL = `https://<machine>.<tailnet>.ts.net:<port>/?token=…` when a free Tailscale cert is available, otherwise `http://<tailscale-ip>:<port>/?token=…`. Auth: loopback open; remote `?token=` is a one-time Safari bootstrap, then an HttpOnly SameSite=Strict cookie (`Secure` on HTTPS). API fetches do not put the token in the query string and do not keep it in localStorage.
 
 **Local data (user machine, not in repo):**
 
@@ -214,6 +215,7 @@ npm.cmd run server       # node server/index.js → http://127.0.0.1:3847
 | `~/.grok/sessions/` | Real Grok session store (shared with CLI) |
 | `~/.grok/auth.json` | Grok OAuth / account credentials (**never commit**; each user signs in locally) |
 | `~/.grok-desktop/config.json` | Desktop bind host/port/token/`allowLan`/`permissionMode`/`seenFolders` |
+| `~/.grok-desktop/certs/` | Tailscale HTTPS cert + key for the phone URL (**never commit**) |
 | `~/.grok-desktop/uploads/` | Attached images saved for the current machine |
 | `~/.grok-desktop/debug.log` | Optional spawn/stream debug lines |
 

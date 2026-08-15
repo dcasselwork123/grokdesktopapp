@@ -61,7 +61,7 @@ Then open http://127.0.0.1:3847. The setup gate is the same.
 | **`/btw`** | Side chat in a new window (or tab) with a fork of the current session |
 | **`/clear` / `/new`** | Fresh draft in the same folder |
 | **Images** | **+**, paste, or drag-and-drop (max 8). Re-encoded to JPEG on the client |
-| **Voice** | Mic next to Send; [Grok Speech-to-Text](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text) fills the box **as you speak** on desktop. On the phone over Tailscale HTTP, Safari cannot open the live mic — the same button picks a Voice Memo / audio file and transcribes it |
+| **Voice** | Mic next to Send; [Grok Speech-to-Text](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text) fills the box **as you speak**. On the phone, use the **HTTPS** Tailscale URL (`https://….ts.net` — free Let’s Encrypt). Plain `http://100.x` cannot open the live mic; the button then asks for a Voice Memo / file |
 | **Model / Effort** | Composer selectors, including a custom model picker |
 | **Usage** | Weekly usage pie in the composer; click for session context |
 | **Folder** | Desktop: native folder dialog. Phone: known project folders or the last desktop folder (not a free-form `C:\` path) |
@@ -78,7 +78,9 @@ Keep Grok Desktop running on the PC. On the PC, click **📱** in the sidebar fo
 1. Install [Tailscale](https://tailscale.com/download) on the PC and iPhone; sign into the same account.
 2. On the phone, open the copied URL in Safari. The `?token=` query is a **one-time bootstrap**; the server then sets an **HttpOnly SameSite=Strict cookie**. The address bar is cleaned; the token is **not** stored in localStorage. Later API fetches do **not** put the token in the query string.
 
-Default bind is **loopback + Tailscale** (`127.0.0.1` and the PC’s `100.x` address), not all interfaces. A random token is stored in `~/.grok-desktop/config.json`. You do not need to set env vars for the usual case.
+Default bind is **loopback + Tailscale** (`127.0.0.1` and the PC’s `100.x` address), not all interfaces. When Tailscale **HTTPS Certificates** are on (free, [admin DNS page](https://login.tailscale.com/admin/dns)), the copied phone URL is `https://<pc-name>.<tailnet>.ts.net:<port>/?token=…` so iPhone Chrome/Safari can use the live mic. A random token is stored in `~/.grok-desktop/config.json`. You do not need to set env vars for the usual case.
+
+If you still have an old `http://100.…` bookmark, copy the phone URL again after relaunching the desktop app.
 
 Loopback (`127.0.0.1`) does not need a token. Anything remote does — after that first `?token=` load, the cookie keeps CSS/JS and API calls working.
 

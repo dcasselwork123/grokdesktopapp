@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { execFile, execFileSync } = require("child_process");
-const { randomBytes } = require("crypto");
+const { randomBytes, X509Certificate } = require("crypto");
 
 const CONFIG_DIR = path.join(os.homedir(), ".grok-desktop");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
@@ -420,17 +420,137 @@ function getLanIpv4() {
   return null;
 }
 
-function phoneUrlFor(ip, port, token) {
-  const base = `http://${ip}:${port}`;
+function normalizeTailscaleDnsName(name) {
+  const raw = String(name || "")
+    .trim()
+    .replace(/\.$/, "")
+    .toLowerCase();
+  return raw || null;
+}
+
+function parseTailscaleStatus(json) {
+  const src = json && typeof json === "object" ? json : {};
+  const self = src.Self && typeof src.Self === "object" ? src.Self : {};
+  const dnsName = normalizeTailscaleDnsName(self.DNSName);
+  const certDomains = (Array.isArray(src.CertDomains) ? src.CertDomains : [])
+    .map(normalizeTailscaleDnsName)
+    .filter(Boolean);
+  const ips = Array.isArray(self.TailscaleIPs) ? self.TailscaleIPs : [];
+  const ip =
+    ips.find((value) => /^\d{1,3}(\.\d{1,3}){3}$/.test(String(value))) || null;
+  const httpsEligible = Boolean(dnsName && certDomains.includes(dnsName));
+  return { ip, dnsName, certDomains, httpsEligible };
+}
+
+function detectTailscaleStatusSync() {
+  const bin = findTailscaleBinary();
+  try {
+    const out = execFileSync(bin, ["status", "--json"], {
+      encoding: "utf8",
+      timeout: 5000,
+      windowsHide: true,
+    });
+    return parseTailscaleStatus(JSON.parse(out));
+  } catch {
+    return {
+      ip: detectTailscaleIpSync(),
+      dnsName: null,
+      certDomains: [],
+      httpsEligible: false,
+    };
+  }
+}
+
+function getTailscaleCertDir() {
+  return path.join(os.homedir(), ".grok-desktop", "certs");
+}
+
+function tailscaleCertPaths(dnsName) {
+  const safe = String(dnsName || "").replace(/[^a-z0-9.-]/gi, "_");
+  const dir = getTailscaleCertDir();
+  return {
+    dir,
+    cert: path.join(dir, `${safe}.crt`),
+    key: path.join(dir, `${safe}.key`),
+  };
+}
+
+function certNeedsRefresh(certPem, { now = Date.now(), renewWithinMs = 14 * 86400000 } = {}) {
+  try {
+    const x509 = new X509Certificate(certPem);
+    const exp = Date.parse(x509.validTo);
+    return !Number.isFinite(exp) || exp - now < renewWithinMs;
+  } catch {
+    return true;
+  }
+}
+
+function readTailscaleTlsMaterial(dnsName) {
+  const name = normalizeTailscaleDnsName(dnsName);
+  if (!name) return null;
+  const paths = tailscaleCertPaths(name);
+  if (!fs.existsSync(paths.cert) || !fs.existsSync(paths.key)) return null;
+  let cert;
+  let key;
+  try {
+    cert = fs.readFileSync(paths.cert);
+    key = fs.readFileSync(paths.key);
+  } catch {
+    return null;
+  }
+  if (!cert.length || !key.length || certNeedsRefresh(cert)) return null;
+  return { cert, key, dnsName: name };
+}
+
+function requestTailscaleCertificate(dnsName) {
+  const name = normalizeTailscaleDnsName(dnsName);
+  if (!name) return null;
+  const paths = tailscaleCertPaths(name);
+  try {
+    fs.mkdirSync(paths.dir, { recursive: true });
+  } catch {
+    return null;
+  }
+  const bin = findTailscaleBinary();
+  try {
+    execFileSync(bin, ["cert", "--cert-file", paths.cert, "--key-file", paths.key, name], {
+      encoding: "utf8",
+      timeout: 25000,
+      windowsHide: true,
+    });
+  } catch (err) {
+    console.warn(
+      "[remoteAccess] tailscale cert failed:",
+      err && err.message ? err.message : err
+    );
+    return null;
+  }
+  return readTailscaleTlsMaterial(name);
+}
+
+function ensureTailscaleHttpsCert(dnsName) {
+  const existing = readTailscaleTlsMaterial(dnsName);
+  if (existing) return existing;
+  return requestTailscaleCertificate(dnsName);
+}
+
+function phoneUrlFor(host, port, token, { https = false } = {}) {
+  const scheme = https ? "https" : "http";
+  const base = `${scheme}://${host}:${port}`;
   return token ? `${base}/?token=${encodeURIComponent(token)}` : base;
 }
 
-function bindNoteFor({ allowLan, tailscaleIp, usedLan }) {
+function bindNoteFor({ allowLan, tailscaleIp, usedLan, httpsPhone }) {
+  if (httpsPhone) {
+    return allowLan
+      ? "HTTPS over Tailscale (free Let's Encrypt). Live mic works in Chrome/Safari. LAN HTTP is also on."
+      : "HTTPS over Tailscale (free Let's Encrypt). Live mic works in Chrome/Safari while this app is open.";
+  }
   if (tailscaleIp && allowLan) {
-    return "Reachable over Tailscale. LAN access is also on — devices on this Wi-Fi, including cafe or public networks, can reach this app.";
+    return "Reachable over Tailscale. LAN access is also on — devices on this Wi-Fi, including cafe or public networks, can reach this app. Live mic needs HTTPS: enable HTTPS Certificates in the Tailscale admin DNS page (free), then relaunch.";
   }
   if (tailscaleIp) {
-    return "Reachable over Tailscale while this app is open.";
+    return "Reachable over Tailscale while this app is open. Live mic on iPhone needs HTTPS: enable HTTPS Certificates in the Tailscale admin DNS page (free), then relaunch.";
   }
   if (allowLan) {
     return usedLan
@@ -440,13 +560,26 @@ function bindNoteFor({ allowLan, tailscaleIp, usedLan }) {
   return "Phone access needs Tailscale on this PC. The app is not reachable from other devices until Tailscale is up.";
 }
 
-function buildRemoteInfo({ port, token, host, allowLan, tailscaleIp, lanIpv4 } = {}) {
+function buildRemoteInfo({
+  port,
+  token,
+  host,
+  allowLan,
+  tailscaleIp,
+  lanIpv4,
+  tailscaleDns,
+  httpsPhone,
+} = {}) {
   const allow = Boolean(allowLan);
   const tsIp = tailscaleIp === undefined ? detectTailscaleIpSync() : tailscaleIp;
+  const dnsName = normalizeTailscaleDnsName(tailscaleDns);
+  const useHttps = Boolean(httpsPhone && dnsName);
 
   let phoneHost = null;
   let usedLan = false;
-  if (tsIp) {
+  if (useHttps) {
+    phoneHost = dnsName;
+  } else if (tsIp) {
     phoneHost = tsIp;
   } else if (allow) {
     const lan = lanIpv4 !== undefined ? lanIpv4 : getLanIpv4();
@@ -456,7 +589,9 @@ function buildRemoteInfo({ port, token, host, allowLan, tailscaleIp, lanIpv4 } =
     }
   }
 
-  const phoneUrl = phoneHost ? phoneUrlFor(phoneHost, port, token) : null;
+  const phoneUrl = phoneHost
+    ? phoneUrlFor(phoneHost, port, token, { https: useHttps })
+    : null;
 
   return {
     host,
@@ -466,7 +601,14 @@ function buildRemoteInfo({ port, token, host, allowLan, tailscaleIp, lanIpv4 } =
     phoneUrl,
     canCopyPhoneUrl: Boolean(phoneUrl),
     allowLan: allow,
-    bindNote: bindNoteFor({ allowLan: allow, tailscaleIp: tsIp || null, usedLan }),
+    bindNote: bindNoteFor({
+      allowLan: allow,
+      tailscaleIp: tsIp || null,
+      usedLan,
+      httpsPhone: useHttps,
+    }),
+    httpsPhone: useHttps,
+    tailscaleDns: dnsName,
     localUrl: token
       ? `http://127.0.0.1:${port}/?token=${encodeURIComponent(token)}`
       : `http://127.0.0.1:${port}`,
@@ -498,6 +640,8 @@ function toPublicRemoteInfo(info) {
     tailscaleIp: src.tailscaleIp,
     allowLan: src.allowLan,
     bindNote: src.bindNote,
+    httpsPhone: !!src.httpsPhone,
+    tailscaleDns: src.tailscaleDns || null,
     hasToken: Boolean(token),
     canCopyPhoneUrl: false,
     phoneUrl: null,
@@ -513,7 +657,9 @@ function toPublicRemoteInfo(info) {
       key === "port" ||
       key === "tailscaleIp" ||
       key === "allowLan" ||
-      key === "bindNote"
+      key === "bindNote" ||
+      key === "httpsPhone" ||
+      key === "tailscaleDns"
     ) {
       continue;
     }
@@ -585,4 +731,10 @@ module.exports = {
   isSeenFolder,
   getPermissionMode,
   setPermissionMode,
+  normalizeTailscaleDnsName,
+  parseTailscaleStatus,
+  detectTailscaleStatusSync,
+  certNeedsRefresh,
+  ensureTailscaleHttpsCert,
+  phoneUrlFor,
 };

@@ -10,6 +10,9 @@ const {
   isAllowedPeer,
   getListenPlan,
   buildRemoteInfo,
+  parseTailscaleStatus,
+  normalizeTailscaleDnsName,
+  certNeedsRefresh,
   toPublicRemoteInfo,
   toLoopbackRemoteInfo,
   normalizeStoredCwd,
@@ -130,6 +133,56 @@ test("buildRemoteInfo with allowLan can use a LAN IPv4", () => {
   assert.strictEqual(info.allowLan, true);
   assert.ok(/wifi|wi-fi|cafe|public/i.test(info.bindNote));
   assert.ok(!/set host to 0\.0\.0\.0/i.test(info.bindNote));
+});
+
+test("normalizeTailscaleDnsName strips trailing dots", () => {
+  assert.strictEqual(
+    normalizeTailscaleDnsName("desktop-r8mr0nj.tail014cfa.ts.net."),
+    "desktop-r8mr0nj.tail014cfa.ts.net"
+  );
+  assert.strictEqual(normalizeTailscaleDnsName("  "), null);
+});
+
+test("parseTailscaleStatus reads MagicDNS and cert domains", () => {
+  const parsed = parseTailscaleStatus({
+    CertDomains: ["desktop-r8mr0nj.tail014cfa.ts.net"],
+    Self: {
+      DNSName: "desktop-r8mr0nj.tail014cfa.ts.net.",
+      TailscaleIPs: ["100.127.87.75", "fd7a:115c:a1e0::1"],
+    },
+  });
+  assert.strictEqual(parsed.dnsName, "desktop-r8mr0nj.tail014cfa.ts.net");
+  assert.strictEqual(parsed.ip, "100.127.87.75");
+  assert.strictEqual(parsed.httpsEligible, true);
+});
+
+test("parseTailscaleStatus is not HTTPS-eligible without cert domains", () => {
+  const parsed = parseTailscaleStatus({
+    Self: { DNSName: "box.tail014cfa.ts.net.", TailscaleIPs: ["100.64.1.2"] },
+  });
+  assert.strictEqual(parsed.httpsEligible, false);
+});
+
+test("certNeedsRefresh treats invalid PEM as expired", () => {
+  assert.strictEqual(certNeedsRefresh("not-a-cert"), true);
+});
+
+test("buildRemoteInfo uses https MagicDNS when a cert is live", () => {
+  const info = buildRemoteInfo({
+    port: 3847,
+    token: "tok",
+    host: "127.0.0.1",
+    allowLan: false,
+    tailscaleIp: "100.64.1.9",
+    tailscaleDns: "desktop-r8mr0nj.tail014cfa.ts.net",
+    httpsPhone: true,
+  });
+  assert.strictEqual(
+    info.phoneUrl,
+    "https://desktop-r8mr0nj.tail014cfa.ts.net:3847/?token=tok"
+  );
+  assert.strictEqual(info.httpsPhone, true);
+  assert.ok(/https/i.test(info.bindNote));
 });
 
 test("buildRemoteInfo prefers Tailscale over LAN when both exist", () => {

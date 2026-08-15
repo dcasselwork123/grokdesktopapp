@@ -4602,9 +4602,12 @@
     }
 
     if (statusEl) {
-      if (info && info.tailscaleIp) {
+      if (info && info.httpsPhone) {
         statusEl.textContent =
-          "While this app is open, the phone can reach it over Tailscale (loopback + Tailscale).";
+          "HTTPS Tailscale URL — live mic works in iPhone Chrome/Safari. Re-copy this URL if the phone still has an old http://100… link.";
+      } else if (info && info.tailscaleIp) {
+        statusEl.textContent =
+          "While this app is open, the phone can reach it over Tailscale (loopback + Tailscale). Live mic needs the HTTPS phone URL.";
       } else if (info && info.allowLan) {
         statusEl.textContent =
           "LAN access is on. Devices on this trusted network can reach the app — cafe/public Wi‑Fi can too.";
