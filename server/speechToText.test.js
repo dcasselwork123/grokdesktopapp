@@ -7,6 +7,8 @@ const {
   looksLikeWav,
   validateAudioBuffer,
   transcribeAudio,
+  mergeTranscript,
+  createLiveTranscriber,
 } = require("./speechToText");
 
 let failed = 0;
@@ -144,6 +146,81 @@ async function main() {
         }),
       (err) => err.code === "STT_UNAUTHORIZED" && err.status === 401
     );
+  });
+
+  await test("mergeTranscript extends cumulative text", () => {
+    assert.strictEqual(mergeTranscript("hello", "hello there"), "hello there");
+    assert.strictEqual(mergeTranscript("hello there", "hello"), "hello");
+  });
+
+  await test("mergeTranscript appends a new chunk", () => {
+    assert.strictEqual(mergeTranscript("hello there", "how are you"), "hello there how are you");
+  });
+
+  await test("mergeTranscript prefers a full stitch that ends with the current text", () => {
+    assert.strictEqual(
+      mergeTranscript("how are you", "hello there how are you"),
+      "hello there how are you"
+    );
+  });
+
+  await test("createLiveTranscriber streams partials and finishes", async () => {
+    const pcm = Buffer.alloc(3200);
+    const partials = [];
+    let instance = null;
+    function FakeWS() {
+      instance = this;
+      this.sent = [];
+      this.handlers = {};
+      queueMicrotask(() => {
+        this._emit("open");
+        this._emit("message", {
+          data: JSON.stringify({ type: "transcript.created" }),
+        });
+      });
+    }
+    FakeWS.prototype.addEventListener = function (type, fn) {
+      (this.handlers[type] || (this.handlers[type] = [])).push(fn);
+    };
+    FakeWS.prototype._emit = function (type, ev) {
+      for (const fn of this.handlers[type] || []) fn(ev || {});
+    };
+    FakeWS.prototype.send = function (data) {
+      this.sent.push(data);
+    };
+    FakeWS.prototype.close = function () {
+      this._emit("close", { code: 1000 });
+    };
+
+    const live = createLiveTranscriber({
+      apiKey: "test-key",
+      WebSocketImpl: FakeWS,
+      onPartial: ({ text }) => partials.push(text),
+    });
+    await live.whenReady({ timeoutMs: 500 });
+    live.sendPcm(pcm);
+    assert.ok(instance);
+    assert.ok(instance.sent.some((item) => Buffer.isBuffer(item) && item.length === 3200));
+    instance._emit("message", {
+      data: JSON.stringify({
+        type: "transcript.partial",
+        text: "hello",
+        is_final: false,
+      }),
+    });
+    instance._emit("message", {
+      data: JSON.stringify({
+        type: "transcript.partial",
+        text: "hello there",
+        is_final: false,
+      }),
+    });
+    assert.deepStrictEqual(partials, ["hello", "hello there"]);
+    const done = live.finish({ timeoutMs: 500 });
+    instance._emit("message", {
+      data: JSON.stringify({ type: "transcript.done", text: "hello there" }),
+    });
+    assert.strictEqual(await done, "hello there");
   });
 
   await test("transcribeAudio requires a key", async () => {

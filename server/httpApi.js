@@ -20,7 +20,7 @@ const {
   renameSession,
   getUsageSnapshot,
 } = require("./grokService");
-const { transcribeAudio } = require("./speechToText");
+const { transcribeAudio, createLiveTranscriber, decodePcmPayload } = require("./speechToText");
 const {
   buildRemoteInfo,
   normalizeRemoteAddress,
@@ -451,10 +451,57 @@ async function createServer({
   allowLan: allowLanOpt,
 } = {}) {
   const activeRuns = new Map();
+  const liveSttSessions = new Map();
+  const MAX_LIVE_STT = 3;
+  const LIVE_STT_TTL_MS = 200_000;
   if (staticDir) staticDir = path.resolve(staticDir);
 
   let currentToken = token;
   const chatRateLimiter = createChatRateLimiter();
+
+  function writeLiveStt(record, event, data) {
+    if (!record) return;
+    let chunk;
+    try {
+      chunk = formatSse(event, data);
+    } catch {
+      return;
+    }
+    for (const client of [...record.sseClients]) {
+      if (!safeWrite(client, chunk)) record.sseClients.delete(client);
+    }
+  }
+
+  function destroyLiveStt(id) {
+    const record = liveSttSessions.get(id);
+    if (!record) return;
+    liveSttSessions.delete(id);
+    if (record.timer) {
+      clearTimeout(record.timer);
+      record.timer = null;
+    }
+    if (record.keepAlive) {
+      clearInterval(record.keepAlive);
+      record.keepAlive = null;
+    }
+    try {
+      if (record.transcriber) record.transcriber.close();
+    } catch {
+      /* ignore */
+    }
+    for (const client of [...record.sseClients]) {
+      try {
+        if (!client.writableEnded) client.end();
+      } catch {
+        /* ignore */
+      }
+    }
+    record.sseClients.clear();
+  }
+
+  function destroyAllLiveStt() {
+    for (const id of [...liveSttSessions.keys()]) destroyLiveStt(id);
+  }
 
   let boundPort = port;
   let boundHost = "127.0.0.1";
@@ -613,6 +660,7 @@ async function createServer({
   }
 
   async function close() {
+    destroyAllLiveStt();
     await rebindLock.catch(() => {});
     if (allInterfacesServer) {
       await closeHttpServer(allInterfacesServer);
@@ -931,6 +979,207 @@ async function createServer({
           const status = err.code === "NOT_FOUND" ? 404 : 500;
           sendJson(res, status, { error: err.message || String(err) }, extraHeaders);
         }
+        return;
+      }
+
+      if (pathname === "/api/stt/start" && req.method === "POST") {
+        if (!isLoopbackRequest(req)) {
+          try {
+            chatRateLimiter.check(presented || req.socket.remoteAddress);
+          } catch (err) {
+            sendJson(
+              res,
+              err && err.status ? err.status : 429,
+              { error: (err && err.message) || String(err) },
+              extraHeaders
+            );
+            return;
+          }
+        }
+        if (liveSttSessions.size >= MAX_LIVE_STT) {
+          const oldest = [...liveSttSessions.values()].sort(
+            (a, b) => a.createdAt - b.createdAt
+          )[0];
+          if (oldest) destroyLiveStt(oldest.id);
+        }
+        const id = createSessionId();
+        const record = {
+          id,
+          transcriber: null,
+          sseClients: new Set(),
+          createdAt: Date.now(),
+          bytes: 0,
+          timer: null,
+          keepAlive: null,
+        };
+        try {
+          record.transcriber = createLiveTranscriber({
+            language: "en",
+            onPartial: ({ text }) => writeLiveStt(record, "partial", { text }),
+            onError: (err) =>
+              writeLiveStt(record, "fail", {
+                error: (err && err.message) || "Speech stream failed",
+              }),
+            onDone: ({ text }) => {
+              writeLiveStt(record, "done", { text: text || "" });
+              for (const client of [...record.sseClients]) {
+                try {
+                  if (!client.writableEnded) client.end();
+                } catch {
+                  /* ignore */
+                }
+              }
+              record.sseClients.clear();
+            },
+          });
+        } catch (err) {
+          sendJson(
+            res,
+            err && err.status ? err.status : 500,
+            {
+              error: (err && err.message) || "Could not start voice",
+              code: (err && err.code) || null,
+            },
+            extraHeaders
+          );
+          return;
+        }
+        liveSttSessions.set(id, record);
+        record.timer = setTimeout(() => destroyLiveStt(id), LIVE_STT_TTL_MS);
+        try {
+          await record.transcriber.whenReady({ timeoutMs: 8000 });
+        } catch (err) {
+          destroyLiveStt(id);
+          sendJson(
+            res,
+            err && err.status ? err.status : 502,
+            {
+              error: (err && err.message) || "Could not start voice",
+              code: (err && err.code) || null,
+            },
+            extraHeaders
+          );
+          return;
+        }
+        sendJson(res, 200, { sessionId: id }, extraHeaders);
+        return;
+      }
+
+      if (pathname === "/api/stt/live" && req.method === "GET") {
+        const id = parsed.searchParams.get("sessionId") || "";
+        if (isRejectedSessionId(id) || !liveSttSessions.has(id)) {
+          sendJson(res, 404, { error: "Voice session not found" }, extraHeaders);
+          return;
+        }
+        const record = liveSttSessions.get(id);
+        writeSseHeaders(res, extraHeaders);
+        record.sseClients.add(res);
+        const current = record.transcriber ? record.transcriber.getText() : "";
+        safeWrite(res, formatSse("ready", { sessionId: id, text: current }));
+        if (current) safeWrite(res, formatSse("partial", { text: current }));
+        if (!record.keepAlive) {
+          record.keepAlive = setInterval(() => {
+            for (const client of [...record.sseClients]) {
+              if (!safeWrite(client, ": ping\n\n")) record.sseClients.delete(client);
+            }
+          }, 15000);
+        }
+        const detach = () => record.sseClients.delete(res);
+        req.on("close", detach);
+        res.on("close", detach);
+        return;
+      }
+
+      if (pathname === "/api/stt/audio" && req.method === "POST") {
+        let body;
+        try {
+          body = await readBody(req, { maxBytes: 256 * 1024 });
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            {
+              error:
+                err.message === "Body too large"
+                  ? "Audio chunk too large"
+                  : "Invalid JSON body",
+            },
+            extraHeaders
+          );
+          return;
+        }
+        const id = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+        if (isRejectedSessionId(id) || !liveSttSessions.has(id)) {
+          sendJson(res, 404, { error: "Voice session not found" }, extraHeaders);
+          return;
+        }
+        const record = liveSttSessions.get(id);
+        let pcm;
+        try {
+          pcm = decodePcmPayload(body.pcm || body.audio || body.data);
+        } catch (err) {
+          sendJson(
+            res,
+            err && err.status ? err.status : 400,
+            {
+              error: (err && err.message) || "Invalid audio",
+              code: (err && err.code) || null,
+            },
+            extraHeaders
+          );
+          return;
+        }
+        record.bytes += pcm.length;
+        if (record.bytes > 8 * 1024 * 1024) {
+          sendJson(res, 400, { error: "Audio is too long" }, extraHeaders);
+          return;
+        }
+        try {
+          record.transcriber.sendPcm(pcm);
+          sendJson(res, 202, { ok: true }, extraHeaders);
+        } catch (err) {
+          sendJson(
+            res,
+            err && err.status ? err.status : 400,
+            {
+              error: (err && err.message) || "Could not send audio",
+              code: (err && err.code) || null,
+            },
+            extraHeaders
+          );
+        }
+        return;
+      }
+
+      if (pathname === "/api/stt/stop" && req.method === "POST") {
+        let body = {};
+        try {
+          body = await readBody(req);
+        } catch {
+          body = {};
+        }
+        const id = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+        if (isRejectedSessionId(id) || !liveSttSessions.has(id)) {
+          sendJson(res, 404, { error: "Voice session not found" }, extraHeaders);
+          return;
+        }
+        const record = liveSttSessions.get(id);
+        if (body.cancel) {
+          const text = record.transcriber ? record.transcriber.getText() : "";
+          destroyLiveStt(id);
+          sendJson(res, 200, { text, cancelled: true }, extraHeaders);
+          return;
+        }
+        let text = "";
+        try {
+          text = record.transcriber
+            ? await record.transcriber.finish({ timeoutMs: 8000 })
+            : "";
+        } catch {
+          text = record.transcriber ? record.transcriber.getText() : "";
+        }
+        destroyLiveStt(id);
+        sendJson(res, 200, { text: text || "" }, extraHeaders);
         return;
       }
 

@@ -32,6 +32,13 @@ test('isPrivilegedPost("POST", "/api/stt") is false', () => {
   assert.strictEqual(isPrivilegedPost("POST", "/api/stt"), false);
 });
 
+test("live STT routes are not loopback-only", () => {
+  assert.strictEqual(isPrivilegedPost("POST", "/api/stt/start"), false);
+  assert.strictEqual(isPrivilegedPost("POST", "/api/stt/audio"), false);
+  assert.strictEqual(isPrivilegedPost("POST", "/api/stt/stop"), false);
+  assert.strictEqual(isPrivilegedPost("GET", "/api/stt/live"), false);
+});
+
 test('isPrivilegedPost("POST", "/api/auth/login") is true', () => {
   assert.strictEqual(isPrivilegedPost("POST", "/api/auth/login"), true);
 });

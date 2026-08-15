@@ -153,6 +153,14 @@
       mute: null,
       chunks: [],
       sampleRate: 16000,
+      sessionId: null,
+      events: null,
+      sendChain: Promise.resolve(),
+      pcmPending: [],
+      pcmCount: 0,
+      insertStart: null,
+      insertEnd: null,
+      liveText: "",
     },
   };
 
@@ -2386,7 +2394,7 @@
   async function sendPrompt(opts = {}) {
     const queued = opts.queued || null;
     const sendNow = !!opts.sendNow;
-    const text = queued ? String(queued.text || "").trim() : els.prompt.value.trim();
+    let text = queued ? String(queued.text || "").trim() : els.prompt.value.trim();
     const pendingImages = queued
       ? (queued.images || []).slice()
       : state.attachments.slice();
@@ -2399,11 +2407,8 @@
       return;
     }
     if (!queued && state.voice.phase === "recording") {
-      if (!text && !pendingImages.length) {
-        await stopVoice({ transcribe: true });
-        return;
-      }
-      await stopVoice({ transcribe: false });
+      await stopVoice({ transcribe: true });
+      text = els.prompt.value.trim();
     }
     if (!text && !pendingImages.length) return;
 
@@ -3605,9 +3610,9 @@
     if (label) {
       if (phase === "recording") {
         const elapsed = Date.now() - (state.voice.startedAt || Date.now());
-        label.textContent = `Listening ${formatVoiceClock(elapsed)} · tap mic to stop · Esc cancels`;
+        label.textContent = `Listening ${formatVoiceClock(elapsed)} · words appear as you speak · Esc cancels`;
       } else if (phase === "transcribing") {
-        label.textContent = "Transcribing with Grok…";
+        label.textContent = "Finishing transcript…";
       }
     }
     if (els.prompt && phase !== "idle") {
@@ -3621,17 +3626,41 @@
   function insertTranscript(text) {
     const t = String(text || "").trim();
     if (!t || !els.prompt) return;
+    if (typeof state.voice.insertStart === "number") {
+      updateVoiceDraft(t);
+      return;
+    }
     const el = els.prompt;
     const cur = el.value || "";
     const start = typeof el.selectionStart === "number" ? el.selectionStart : cur.length;
     const end = typeof el.selectionEnd === "number" ? el.selectionEnd : cur.length;
-    const before = cur.slice(0, start);
-    const after = cur.slice(end);
-    const spaceBefore = before && !/\s$/.test(before) ? " " : "";
-    const spaceAfter = after && !/^\s/.test(after) ? " " : "";
+    state.voice.insertStart = start;
+    state.voice.insertEnd = end;
+    updateVoiceDraft(t);
+  }
+
+  function updateVoiceDraft(text) {
+    if (!els.prompt) return;
+    const el = els.prompt;
+    const t = String(text || "").replace(/\s+/g, " ").trim();
+    state.voice.liveText = t;
+    if (typeof state.voice.insertStart !== "number") {
+      const caret =
+        typeof el.selectionStart === "number" ? el.selectionStart : (el.value || "").length;
+      state.voice.insertStart = caret;
+      state.voice.insertEnd = caret;
+    }
+    const start = state.voice.insertStart;
+    const end =
+      typeof state.voice.insertEnd === "number" ? state.voice.insertEnd : start;
+    const before = el.value.slice(0, start);
+    const after = el.value.slice(end);
+    const spaceBefore = t && before && !/\s$/.test(before) ? " " : "";
+    const spaceAfter = t && after && !/^\s/.test(after) ? " " : "";
     const piece = spaceBefore + t + spaceAfter;
     el.value = before + piece + after;
-    const caret = (before + piece).length;
+    state.voice.insertEnd = start + piece.length;
+    const caret = start + (spaceBefore + t).length;
     try {
       el.selectionStart = el.selectionEnd = caret;
     } catch {
@@ -3639,6 +3668,30 @@
     }
     autoResizePrompt();
     unlockPrompt({ focus: true });
+  }
+
+  function revertVoiceDraft() {
+    if (!els.prompt || typeof state.voice.insertStart !== "number") return;
+    const el = els.prompt;
+    const start = state.voice.insertStart;
+    const end =
+      typeof state.voice.insertEnd === "number" ? state.voice.insertEnd : start;
+    el.value = el.value.slice(0, start) + el.value.slice(end);
+    try {
+      el.selectionStart = el.selectionEnd = start;
+    } catch {
+      /* ignore */
+    }
+    state.voice.insertStart = null;
+    state.voice.insertEnd = null;
+    state.voice.liveText = "";
+    autoResizePrompt();
+  }
+
+  function clearVoiceInsert() {
+    state.voice.insertStart = null;
+    state.voice.insertEnd = null;
+    state.voice.liveText = "";
   }
 
   function downsampleVoice(float32, inputRate, targetRate) {
@@ -3742,6 +3795,18 @@
     }
   }
 
+  function closeVoiceEvents() {
+    const es = state.voice.events;
+    state.voice.events = null;
+    if (es) {
+      try {
+        es.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   function collectVoiceSamples() {
     const chunks = state.voice.chunks || [];
     let total = 0;
@@ -3753,6 +3818,103 @@
       offset += c.length;
     }
     return downsampleVoice(merged, state.voice.sampleRate, VOICE_TARGET_RATE);
+  }
+
+  function floatToPcm16Base64(float32) {
+    const bytes = new Uint8Array(float32.length * 2);
+    const view = new DataView(bytes.buffer);
+    for (let i = 0; i < float32.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32[i]));
+      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    const chunk = 0x8000;
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+
+  function enqueueVoicePcm(float32) {
+    if (!float32 || !float32.length || !state.voice.sessionId) return;
+    const pcm = floatToPcm16Base64(float32);
+    const sessionId = state.voice.sessionId;
+    state.voice.sendChain = state.voice.sendChain
+      .then(() =>
+        api("/api/stt/audio", {
+          method: "POST",
+          body: JSON.stringify({ sessionId, pcm }),
+        })
+      )
+      .catch(() => {});
+  }
+
+  function flushVoicePcm({ force = false } = {}) {
+    const pending = state.voice.pcmPending || [];
+    if (!pending.length) return;
+    if (!force && state.voice.pcmCount < 1600) return;
+    let total = 0;
+    for (const c of pending) total += c.length;
+    const merged = new Float32Array(total);
+    let offset = 0;
+    for (const c of pending) {
+      merged.set(c, offset);
+      offset += c.length;
+    }
+    state.voice.pcmPending = [];
+    state.voice.pcmCount = 0;
+    enqueueVoicePcm(merged);
+  }
+
+  function attachVoiceEvents(sessionId) {
+    closeVoiceEvents();
+    const es = new EventSource(
+      apiUrl(`/api/stt/live?sessionId=${encodeURIComponent(sessionId)}`)
+    );
+    state.voice.events = es;
+    const onPartial = (ev) => {
+      if (state.voice.sessionId !== sessionId) return;
+      if (state.voice.phase === "idle") return;
+      let data = null;
+      try {
+        data = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      const text = data && data.text ? String(data.text) : "";
+      if (text) updateVoiceDraft(text);
+    };
+    es.addEventListener("partial", onPartial);
+    es.addEventListener("done", (ev) => {
+      onPartial(ev);
+      closeVoiceEvents();
+    });
+    es.addEventListener("fail", (ev) => {
+      let msg = "";
+      try {
+        const data = JSON.parse(ev.data);
+        msg = data && data.error ? String(data.error) : "";
+      } catch {
+        msg = "";
+      }
+      if (msg) setStatus(false, msg);
+    });
+    es.onerror = () => {
+      if (state.voice.phase !== "recording") closeVoiceEvents();
+    };
+  }
+
+  async function startLiveVoiceSession() {
+    const started = await api("/api/stt/start", {
+      method: "POST",
+      body: "{}",
+    });
+    const sessionId = started && started.sessionId ? String(started.sessionId) : "";
+    if (!sessionId) throw new Error("Could not start voice");
+    state.voice.sessionId = sessionId;
+    state.voice.sendChain = Promise.resolve();
+    attachVoiceEvents(sessionId);
+    return sessionId;
   }
 
   async function startVoice() {
@@ -3788,6 +3950,20 @@
       return;
     }
 
+    try {
+      await startLiveVoiceSession();
+    } catch (err) {
+      for (const track of stream.getTracks()) {
+        try {
+          track.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+      setStatus(false, (err && err.message) || "Could not start live transcription");
+      return;
+    }
+
     const AC = window.AudioContext || window.webkitAudioContext;
     const ctx = new AC();
     try {
@@ -3800,13 +3976,32 @@
     const mute = ctx.createGain();
     mute.gain.value = 0;
     const chunks = [];
+    state.voice.pcmPending = [];
+    state.voice.pcmCount = 0;
     processor.onaudioprocess = (e) => {
+      if (state.voice.phase !== "recording") return;
       const input = e.inputBuffer.getChannelData(0);
       chunks.push(new Float32Array(input));
+      const down = downsampleVoice(input, ctx.sampleRate || VOICE_TARGET_RATE, VOICE_TARGET_RATE);
+      if (down.length) {
+        state.voice.pcmPending.push(down);
+        state.voice.pcmCount += down.length;
+        if (state.voice.pcmCount >= 1600) flushVoicePcm();
+      }
     };
     source.connect(processor);
     processor.connect(mute);
     mute.connect(ctx.destination);
+
+    if (els.prompt) {
+      const caret =
+        typeof els.prompt.selectionStart === "number"
+          ? els.prompt.selectionStart
+          : els.prompt.value.length;
+      state.voice.insertStart = caret;
+      state.voice.insertEnd = caret;
+      state.voice.liveText = "";
+    }
 
     state.voice.phase = "recording";
     state.voice.startedAt = Date.now();
@@ -3829,45 +4024,69 @@
 
   async function stopVoice({ transcribe = true } = {}) {
     if (state.voice.phase !== "recording") return;
+    flushVoicePcm({ force: true });
     const samples = collectVoiceSamples();
+    const sessionId = state.voice.sessionId;
     stopVoiceTracks();
+    closeVoiceEvents();
     state.voice.chunks = [];
+    state.voice.pcmPending = [];
+    state.voice.pcmCount = 0;
 
     if (!transcribe) {
+      if (sessionId) {
+        try {
+          await api("/api/stt/stop", {
+            method: "POST",
+            body: JSON.stringify({ sessionId, cancel: true }),
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+      revertVoiceDraft();
+      state.voice.sessionId = null;
       state.voice.phase = "idle";
       updateVoiceUi();
-      return;
-    }
-
-    if (!samples.length) {
-      state.voice.phase = "idle";
-      updateVoiceUi();
-      setStatus(false, "Didn't catch that — try again");
       return;
     }
 
     state.voice.phase = "transcribing";
     updateVoiceUi();
+    let finalText = state.voice.liveText || "";
     try {
-      const wav = encodeWavPcm16(samples, VOICE_TARGET_RATE);
-      const audio = await blobToBase64(wav);
-      const result = await api("/api/stt", {
-        method: "POST",
-        body: JSON.stringify({
-          audio,
-          mimeType: "audio/wav",
-          language: "en",
-        }),
-      });
-      const text = result && result.text ? String(result.text).trim() : "";
-      if (!text) {
+      if (state.voice.sendChain) await state.voice.sendChain.catch(() => {});
+      if (sessionId) {
+        const result = await api("/api/stt/stop", {
+          method: "POST",
+          body: JSON.stringify({ sessionId }),
+        });
+        if (result && result.text) finalText = String(result.text).trim();
+      }
+      if (!finalText && samples.length) {
+        const wav = encodeWavPcm16(samples, VOICE_TARGET_RATE);
+        const audio = await blobToBase64(wav);
+        const result = await api("/api/stt", {
+          method: "POST",
+          body: JSON.stringify({
+            audio,
+            mimeType: "audio/wav",
+            language: "en",
+          }),
+        });
+        if (result && result.text) finalText = String(result.text).trim();
+      }
+      if (finalText) insertTranscript(finalText);
+      else if (!state.voice.liveText) {
         setStatus(false, "Didn't catch that — try again");
-      } else {
-        insertTranscript(text);
       }
     } catch (err) {
-      setStatus(false, (err && err.message) || "Transcription failed");
+      if (!state.voice.liveText) {
+        setStatus(false, (err && err.message) || "Transcription failed");
+      }
     } finally {
+      state.voice.sessionId = null;
+      clearVoiceInsert();
       state.voice.phase = "idle";
       updateVoiceUi();
     }

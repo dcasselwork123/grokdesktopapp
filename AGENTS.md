@@ -82,19 +82,20 @@ Persist as `permissionMode` in `~/.grok-desktop/config.json`. Do not take a perm
 
 ### Voice dictation
 
-Claude Desktop–style **mic** next to Send. Click to record, click again to stop; Grok Speech-to-Text fills the composer. Esc cancels. Does **not** auto-send.
+Claude Desktop–style **mic** next to Send. Click to record, click again to stop. Words appear in the composer **while you talk**. Esc cancels. Does **not** auto-send.
 
 | | |
 |--|--|
-| **API** | `POST https://api.x.ai/v1/stt` via our `POST /api/stt` (CSP is `connect-src 'self'`) |
-| **Auth** | Same `~/.grok/auth.json` access key as billing (`getAccountAccessKey`), or `XAI_API_KEY` |
-| **Audio** | Client records PCM, encodes **WAV** 16 kHz mono, sends base64 JSON. Do not persist clips. |
+| **Live** | `wss://api.x.ai/v1/stt` (interim results) proxied as `POST /api/stt/start` + `GET /api/stt/live` (SSE) + `POST /api/stt/audio` + `POST /api/stt/stop` |
+| **Fallback** | If the live stream returns nothing, batch `POST /api/stt` still transcribes the clip |
+| **Auth** | Same `~/.grok/auth.json` access key as billing (`getAccountAccessKey`), or `XAI_API_KEY`. Never expose the key to the client. |
+| **Audio** | Client streams 16 kHz PCM16 chunks (~100 ms). Do not persist clips. |
 | **Desktop** | Electron must allow `media` / microphone for the API origin (`electron/main.js` → `installMediaPermissions`) |
 | **Phone** | Hidden unless the page is a secure context (`https` or localhost). Tailscale `http://100.x` is not secure, so Safari will not open the mic. |
 
-Never return the STT API key to the client. Max clip ~3 minutes / 8 MB. Empty transcript → “Didn’t catch that”.
+Max clip ~3 minutes / 8 MB. Empty transcript → “Didn’t catch that”.
 
-Server: `server/speechToText.js`. UI: `renderer/app.js` + composer mic in `index.html`.
+Server: `server/speechToText.js` (`createLiveTranscriber`). UI: `renderer/app.js` + composer mic in `index.html`.
 
 ### Slash commands (app-handled)
 
@@ -259,7 +260,7 @@ UI (Electron or Safari)
   → when ready:
        HTTP/SSE  server/httpApi.js
        → (optional) save images → ~/.grok-desktop/uploads/
-       → (optional) POST /api/stt → Grok Speech-to-Text → insert in composer
+       → (optional) live STT: start/live/audio/stop → Grok streaming STT → fill composer as you speak
        → spawn     grok -p --output-format streaming-json [--resume id]
                    (+ image paths embedded in -p text when attachments present)
        → sessions  ~/.grok/sessions/<cwd>/<id>/
