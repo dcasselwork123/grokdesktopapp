@@ -198,6 +198,11 @@ function buildSttWsUrl({ sampleRate = 16000, language = "en" } = {}) {
   u.searchParams.set("sample_rate", String(sampleRate));
   u.searchParams.set("encoding", "pcm");
   u.searchParams.set("interim_results", "true");
+  // Dictation: hold through mid-sentence pauses; don't cut on a 10ms gap.
+  u.searchParams.set("smart_turn", "0.7");
+  u.searchParams.set("smart_turn_timeout", "3000");
+  u.searchParams.set("endpointing", "400");
+  u.searchParams.set("vad_threshold", "0.05");
   if (language) u.searchParams.set("language", String(language));
   return u.toString();
 }
@@ -214,19 +219,112 @@ function getWebSocketImpl(override) {
   return null;
 }
 
+function normalizePhrase(s) {
+  return String(s || "").replace(/\s+/g, " ").trim();
+}
+
+function wordsOf(s) {
+  return normalizePhrase(s).split(" ").filter(Boolean);
+}
+
+function containsWords(hay, needle) {
+  const h = wordsOf(hay).join(" ").toLowerCase();
+  const n = wordsOf(needle).join(" ").toLowerCase();
+  if (!n) return true;
+  if (!h) return false;
+  return ` ${h} `.includes(` ${n} `);
+}
+
 /**
- * Combine streaming STT events that may be either cumulative or chunked.
+ * Join two phrases, collapsing a repeated tail/head instead of doubling.
  */
-function mergeTranscript(prev, next) {
-  const a = String(prev || "").trim();
-  const b = String(next || "").trim();
+function mergeOverlap(prev, next) {
+  const a = normalizePhrase(prev);
+  const b = normalizePhrase(next);
   if (!b) return a;
   if (!a) return b;
   if (a === b) return b;
-  if (b.startsWith(a) || b.endsWith(a)) return b;
-  if (a.startsWith(b)) return b;
-  if (a.endsWith(b)) return a;
+  const al = a.toLowerCase();
+  const bl = b.toLowerCase();
+  if (bl.startsWith(al) || bl.endsWith(al)) return b;
+  if (al.startsWith(bl) || al.endsWith(bl)) return a;
+
+  const aw = wordsOf(a);
+  const bw = wordsOf(b);
+  const max = Math.min(aw.length, bw.length);
+  for (let n = max; n > 0; n--) {
+    const tail = aw.slice(-n).join(" ").toLowerCase();
+    const head = bw.slice(0, n).join(" ").toLowerCase();
+    if (tail === head) return aw.concat(bw.slice(n)).join(" ");
+  }
   return `${a} ${b}`;
+}
+
+/** Prefer the longer phrase when one already contains the other. Never shrink. */
+function pickBetter(prev, next) {
+  const a = normalizePhrase(prev);
+  const b = normalizePhrase(next);
+  if (!b) return a;
+  if (!a) return b;
+  if (a === b) return b;
+  if (containsWords(b, a)) return b;
+  if (containsWords(a, b)) return a;
+  return mergeOverlap(a, b);
+}
+
+function emptyLiveState() {
+  return { finals: [], committed: "", interim: "" };
+}
+
+function liveTranscriptText(state) {
+  const src = state || emptyLiveState();
+  const committed = normalizePhrase(src.committed);
+  const interim = normalizePhrase(src.interim);
+  let current = committed;
+  if (interim) {
+    if (!committed) current = interim;
+    else if (
+      containsWords(interim, committed) ||
+      interim.toLowerCase().startsWith(committed.toLowerCase())
+    ) {
+      current = pickBetter(committed, interim);
+    } else {
+      current = mergeOverlap(committed, interim);
+    }
+  }
+  return [...(src.finals || []), current].filter(Boolean).join(" ");
+}
+
+/**
+ * Assemble Grok streaming events:
+ * - interim (!is_final): replace the unstable hypothesis only
+ * - chunk final (is_final && !speech_final): lock that slice
+ * - utterance final (speech_final): commit the stitched utterance
+ */
+function applyLiveTranscript(state, event) {
+  const prev = state || emptyLiveState();
+  const next = normalizePhrase(event && event.text);
+  const finals = Array.isArray(prev.finals) ? prev.finals.slice() : [];
+  let committed = prev.committed || "";
+  let interim = prev.interim || "";
+
+  if (event && event.speech_final) {
+    const current = pickBetter(committed, interim);
+    const utterance = next ? pickBetter(current, next) : current;
+    if (utterance) finals.push(utterance);
+    return { finals, committed: "", interim: "" };
+  }
+
+  if (event && event.is_final) {
+    return { finals, committed: pickBetter(committed, next), interim: "" };
+  }
+
+  return { finals, committed, interim: next };
+}
+
+/** @deprecated overlap-safe join; prefer applyLiveTranscript for live streams */
+function mergeTranscript(prev, next) {
+  return pickBetter(prev, next);
 }
 
 function decodePcmPayload(data) {
@@ -266,7 +364,7 @@ function createLiveTranscriber({
     headers["X-XAI-Token-Auth"] = "xai-grok-cli";
   }
 
-  let text = "";
+  let live = emptyLiveState();
   let ready = false;
   let closed = false;
   let finishSent = false;
@@ -282,8 +380,12 @@ function createLiveTranscriber({
     }
   }
 
+  function currentText() {
+    return liveTranscriptText(live);
+  }
+
   function settleFinish() {
-    const finalText = text;
+    const finalText = currentText();
     while (finishWaiters.length) {
       finishWaiters.shift()(finalText);
     }
@@ -299,7 +401,7 @@ function createLiveTranscriber({
   function emitPartial() {
     if (typeof onPartial === "function") {
       try {
-        onPartial({ text });
+        onPartial({ text: currentText() });
       } catch {
         /* ignore */
       }
@@ -338,16 +440,18 @@ function createLiveTranscriber({
       return;
     }
     if (event.type === "transcript.partial") {
-      const next = typeof event.text === "string" ? event.text : "";
-      if (next) {
-        text = mergeTranscript(text, next);
-        emitPartial();
-      }
+      live = applyLiveTranscript(live, event);
+      emitPartial();
       return;
     }
     if (event.type === "transcript.done") {
-      if (typeof event.text === "string" && event.text.trim()) {
-        text = mergeTranscript(text, event.text.trim());
+      const doneText = normalizePhrase(event.text);
+      if (doneText) {
+        live = {
+          finals: [pickBetter(currentText(), doneText)].filter(Boolean),
+          committed: "",
+          interim: "",
+        };
         emitPartial();
       }
       close();
@@ -439,11 +543,11 @@ function createLiveTranscriber({
   }
 
   function finish({ timeoutMs = 8000 } = {}) {
-    if (closed) return Promise.resolve(text);
+    if (closed) return Promise.resolve(currentText());
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         close();
-        resolve(text);
+        resolve(currentText());
       }, timeoutMs);
       finishWaiters.push((finalText) => {
         clearTimeout(timer);
@@ -464,7 +568,7 @@ function createLiveTranscriber({
           .then(sendDone)
           .catch(() => {
             close();
-            resolve(text);
+            resolve(currentText());
           });
       }
     });
@@ -490,7 +594,7 @@ function createLiveTranscriber({
     finish,
     close,
     whenReady,
-    getText: () => text,
+    getText: () => currentText(),
     get ready() {
       return ready;
     },
@@ -512,6 +616,11 @@ module.exports = {
   getSttApiKey,
   transcribeAudio,
   mergeTranscript,
+  mergeOverlap,
+  pickBetter,
+  applyLiveTranscript,
+  liveTranscriptText,
+  emptyLiveState,
   buildSttWsUrl,
   createLiveTranscriber,
 };

@@ -8,7 +8,12 @@ const {
   validateAudioBuffer,
   transcribeAudio,
   mergeTranscript,
+  mergeOverlap,
+  applyLiveTranscript,
+  liveTranscriptText,
+  emptyLiveState,
   createLiveTranscriber,
+  buildSttWsUrl,
 } = require("./speechToText");
 
 let failed = 0;
@@ -153,9 +158,9 @@ async function main() {
     );
   });
 
-  await test("mergeTranscript extends cumulative text", () => {
+  await test("mergeTranscript extends cumulative text and never shrinks", () => {
     assert.strictEqual(mergeTranscript("hello", "hello there"), "hello there");
-    assert.strictEqual(mergeTranscript("hello there", "hello"), "hello");
+    assert.strictEqual(mergeTranscript("hello there", "hello"), "hello there");
   });
 
   await test("mergeTranscript appends a new chunk", () => {
@@ -167,6 +172,45 @@ async function main() {
       mergeTranscript("how are you", "hello there how are you"),
       "hello there how are you"
     );
+  });
+
+  await test("mergeOverlap collapses a repeated tail instead of doubling", () => {
+    assert.strictEqual(mergeOverlap("hello there", "there how are you"), "hello there how are you");
+  });
+
+  await test("applyLiveTranscript keeps interims from wiping committed words", () => {
+    let s = emptyLiveState();
+    s = applyLiveTranscript(s, { text: "hello there", is_final: true });
+    s = applyLiveTranscript(s, { text: "hello", is_final: false });
+    assert.strictEqual(liveTranscriptText(s), "hello there");
+    s = applyLiveTranscript(s, { text: "how are you", is_final: false });
+    assert.strictEqual(liveTranscriptText(s), "hello there how are you");
+  });
+
+  await test("applyLiveTranscript speech_final commits one utterance then starts the next", () => {
+    let s = emptyLiveState();
+    s = applyLiveTranscript(s, { text: "hello there", is_final: true, speech_final: true });
+    s = applyLiveTranscript(s, { text: "how are you", is_final: false });
+    assert.strictEqual(liveTranscriptText(s), "hello there how are you");
+  });
+
+  await test("applyLiveTranscript does not double a stitched speech_final", () => {
+    let s = emptyLiveState();
+    s = applyLiveTranscript(s, { text: "hello there", is_final: true });
+    s = applyLiveTranscript(s, { text: "how are you", is_final: false });
+    s = applyLiveTranscript(s, {
+      text: "hello there how are you",
+      is_final: true,
+      speech_final: true,
+    });
+    assert.strictEqual(liveTranscriptText(s), "hello there how are you");
+  });
+
+  await test("buildSttWsUrl uses dictation-friendly endpointing", () => {
+    const url = buildSttWsUrl({ language: "en" });
+    assert.ok(url.includes("smart_turn=0.7"));
+    assert.ok(url.includes("endpointing=400"));
+    assert.ok(url.includes("interim_results=true"));
   });
 
   await test("createLiveTranscriber streams partials and finishes", async () => {

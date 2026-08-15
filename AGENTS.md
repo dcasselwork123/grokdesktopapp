@@ -86,7 +86,7 @@ Claude Desktop–style **mic** next to Send. Click to record, click again to sto
 
 | | |
 |--|--|
-| **Live** | `wss://api.x.ai/v1/stt` (interim results) proxied as `POST /api/stt/start` + `GET /api/stt/live` (SSE) + `POST /api/stt/audio` + `POST /api/stt/stop` |
+| **Live** | `wss://api.x.ai/v1/stt` with `interim_results`, `smart_turn=0.7`, `endpointing=400`. Assemble with `is_final` / `speech_final` (`applyLiveTranscript`) so interims do not wipe or double words. |
 | **Fallback** | If the live stream returns nothing, batch `POST /api/stt` still transcribes the clip |
 | **Auth** | Same `~/.grok/auth.json` access key as billing (`getAccountAccessKey`), or `XAI_API_KEY`. Never expose the key to the client. |
 | **Audio** | Live: 16 kHz PCM16 chunks (~100 ms). Phone file fallback: Voice Memo / audio file via `POST /api/stt`. Do not persist clips. |

@@ -3853,12 +3853,14 @@
     const pcm = floatToPcm16Base64(float32);
     const sessionId = state.voice.sessionId;
     state.voice.sendChain = state.voice.sendChain
-      .then(() =>
-        api("/api/stt/audio", {
-          method: "POST",
-          body: JSON.stringify({ sessionId, pcm }),
-        })
-      )
+      .then(async () => {
+        const body = JSON.stringify({ sessionId, pcm });
+        try {
+          await api("/api/stt/audio", { method: "POST", body });
+        } catch {
+          await api("/api/stt/audio", { method: "POST", body });
+        }
+      })
       .catch(() => {});
   }
 
