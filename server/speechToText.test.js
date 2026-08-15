@@ -73,9 +73,14 @@ async function main() {
     assert.strictEqual(normalizeAudioMime(""), "audio/wav");
   });
 
+  await test("normalizeAudioMime accepts phone Voice Memo types", () => {
+    assert.strictEqual(normalizeAudioMime("audio/x-m4a"), "audio/x-m4a");
+    assert.strictEqual(normalizeAudioMime("video/mp4"), "video/mp4");
+  });
+
   await test("normalizeAudioMime rejects unknown types", () => {
     assert.throws(
-      () => normalizeAudioMime("video/mp4"),
+      () => normalizeAudioMime("application/pdf"),
       (err) => err.code === "BAD_MIME"
     );
   });

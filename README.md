@@ -61,7 +61,7 @@ Then open http://127.0.0.1:3847. The setup gate is the same.
 | **`/btw`** | Side chat in a new window (or tab) with a fork of the current session |
 | **`/clear` / `/new`** | Fresh draft in the same folder |
 | **Images** | **+**, paste, or drag-and-drop (max 8). Re-encoded to JPEG on the client |
-| **Voice** | Mic next to Send; [Grok Speech-to-Text](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text) fills the box **as you speak** (review, then send). Desktop / localhost only — Safari over Tailscale HTTP cannot open the mic |
+| **Voice** | Mic next to Send; [Grok Speech-to-Text](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text) fills the box **as you speak** on desktop. On the phone over Tailscale HTTP, Safari cannot open the live mic — the same button picks a Voice Memo / audio file and transcribes it |
 | **Model / Effort** | Composer selectors, including a custom model picker |
 | **Usage** | Weekly usage pie in the composer; click for session context |
 | **Folder** | Desktop: native folder dialog. Phone: known project folders or the last desktop folder (not a free-form `C:\` path) |

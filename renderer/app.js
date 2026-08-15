@@ -13,6 +13,7 @@
     btnCwdBrowse: $("#btn-cwd-browse"),
     btnAttach: $("#btn-attach"),
     fileAttach: $("#file-attach"),
+    fileVoice: $("#file-voice"),
     attachStrip: $("#attach-strip"),
     queueStrip: $("#queue-strip"),
     btnMic: $("#btn-mic"),
@@ -179,6 +180,7 @@
   const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
   const VOICE_MAX_SECONDS = 180;
   const VOICE_TARGET_RATE = 16000;
+  const VOICE_MAX_FILE_BYTES = 8 * 1024 * 1024;
   const LAST_SESSION_KEY = "grok_desktop_last_session";
   const LAST_CWD_KEY = "grok_desktop_last_cwd";
   const MD_DEBOUNCE_MS = 64;
@@ -3566,13 +3568,21 @@
   }
 
   // ---------- Voice dictation (Grok Speech-to-Text) ----------
-  function voiceDictationSupported() {
+  function liveVoiceSupported() {
     return !!(
       window.isSecureContext &&
       navigator.mediaDevices &&
       typeof navigator.mediaDevices.getUserMedia === "function" &&
       (window.AudioContext || window.webkitAudioContext)
     );
+  }
+
+  function voiceFileSupported() {
+    return !!(els.fileVoice && typeof FileReader !== "undefined");
+  }
+
+  function voiceDictationSupported() {
+    return liveVoiceSupported() || voiceFileSupported();
   }
 
   function formatVoiceClock(ms) {
@@ -3599,9 +3609,12 @@
     } else if (phase === "transcribing") {
       btn.title = "Transcribing…";
       btn.setAttribute("aria-label", "Transcribing");
-    } else {
+    } else if (liveVoiceSupported()) {
       btn.title = "Dictate with Grok";
       btn.setAttribute("aria-label", "Dictate");
+    } else {
+      btn.title = "Transcribe a voice memo or audio file";
+      btn.setAttribute("aria-label", "Transcribe audio");
     }
     if (strip) {
       strip.classList.toggle("hidden", phase === "idle");
@@ -3917,17 +3930,89 @@
     return sessionId;
   }
 
-  async function startVoice() {
-    if (!voiceDictationSupported()) {
-      setStatus(false, "Voice input needs a secure window (desktop app or localhost)");
+  function voiceFileMime(file) {
+    const t = String((file && file.type) || "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase();
+    if (t === "video/mp4") return "audio/mp4";
+    if (t === "audio/x-m4a" || t === "audio/mp4a-latm") return "audio/m4a";
+    if (t) return t;
+    const name = String((file && file.name) || "").toLowerCase();
+    if (name.endsWith(".mp3")) return "audio/mpeg";
+    if (name.endsWith(".wav")) return "audio/wav";
+    if (name.endsWith(".m4a")) return "audio/m4a";
+    if (name.endsWith(".aac")) return "audio/aac";
+    if (name.endsWith(".mp4")) return "audio/mp4";
+    if (name.endsWith(".webm")) return "audio/webm";
+    if (name.endsWith(".ogg")) return "audio/ogg";
+    return "audio/m4a";
+  }
+
+  function startFileVoice() {
+    if (!els.fileVoice) {
+      setStatus(false, "Voice input is not available in this browser");
       return;
     }
+    if (/Android/i.test(navigator.userAgent || "")) {
+      els.fileVoice.setAttribute("capture", "user");
+    } else {
+      els.fileVoice.removeAttribute("capture");
+    }
+    els.fileVoice.value = "";
+    els.fileVoice.click();
+  }
+
+  async function transcribeVoiceFile(file) {
+    if (!file) return;
+    if (!state.setupReady) {
+      setStatus(false, "Sign in required");
+      showSetupGate();
+      return;
+    }
+    if (file.size > VOICE_MAX_FILE_BYTES) {
+      setStatus(false, "Audio is too long");
+      return;
+    }
+    if (state.voice.phase !== "idle") return;
+    state.voice.phase = "transcribing";
+    updateVoiceUi();
+    try {
+      const audio = await blobToBase64(file);
+      const result = await api("/api/stt", {
+        method: "POST",
+        body: JSON.stringify({
+          audio,
+          mimeType: voiceFileMime(file),
+          language: "en",
+        }),
+      });
+      const text = result && result.text ? String(result.text).trim() : "";
+      if (text) insertTranscript(text);
+      else setStatus(false, "Didn't catch that — try again");
+    } catch (err) {
+      setStatus(false, (err && err.message) || "Transcription failed");
+    } finally {
+      state.voice.phase = "idle";
+      updateVoiceUi();
+    }
+  }
+
+  async function startVoice() {
     if (!state.setupReady) {
       setStatus(false, "Sign in required");
       showSetupGate();
       return;
     }
     if (state.voice.phase !== "idle") return;
+    if (!liveVoiceSupported()) {
+      if (voiceFileSupported()) {
+        startFileVoice();
+        return;
+      }
+      setStatus(false, "Voice input needs a secure window (desktop app or localhost)");
+      return;
+    }
 
     let stream;
     try {
@@ -3939,6 +4024,10 @@
         },
       });
     } catch (err) {
+      if (voiceFileSupported()) {
+        startFileVoice();
+        return;
+      }
       const name = err && err.name;
       if (name === "NotAllowedError" || name === "PermissionDeniedError") {
         setStatus(false, "Microphone permission denied");
@@ -3959,6 +4048,10 @@
         } catch {
           /* ignore */
         }
+      }
+      if (voiceFileSupported()) {
+        startFileVoice();
+        return;
       }
       setStatus(false, (err && err.message) || "Could not start live transcription");
       return;
@@ -4267,6 +4360,13 @@
   if (els.btnMic) {
     els.btnMic.addEventListener("click", () => {
       void toggleVoice();
+    });
+  }
+  if (els.fileVoice) {
+    els.fileVoice.addEventListener("change", () => {
+      const file = els.fileVoice.files && els.fileVoice.files[0];
+      els.fileVoice.value = "";
+      if (file) void transcribeVoiceFile(file);
     });
   }
 

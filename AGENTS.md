@@ -89,9 +89,9 @@ Claude Desktop–style **mic** next to Send. Click to record, click again to sto
 | **Live** | `wss://api.x.ai/v1/stt` (interim results) proxied as `POST /api/stt/start` + `GET /api/stt/live` (SSE) + `POST /api/stt/audio` + `POST /api/stt/stop` |
 | **Fallback** | If the live stream returns nothing, batch `POST /api/stt` still transcribes the clip |
 | **Auth** | Same `~/.grok/auth.json` access key as billing (`getAccountAccessKey`), or `XAI_API_KEY`. Never expose the key to the client. |
-| **Audio** | Client streams 16 kHz PCM16 chunks (~100 ms). Do not persist clips. |
+| **Audio** | Live: 16 kHz PCM16 chunks (~100 ms). Phone file fallback: Voice Memo / audio file via `POST /api/stt`. Do not persist clips. |
 | **Desktop** | Electron must allow `media` / microphone for the API origin (`electron/main.js` → `installMediaPermissions`) |
-| **Phone** | Hidden unless the page is a secure context (`https` or localhost). Tailscale `http://100.x` is not secure, so Safari will not open the mic. |
+| **Phone** | Mic is shown. Live `getUserMedia` needs a secure context (`https` or localhost) — Tailscale `http://100.x` is not secure, so Safari cannot open the live mic. In that case the button opens a file picker (Voice Memo / audio) and batch-transcribes. |
 
 Max clip ~3 minutes / 8 MB. Empty transcript → “Didn’t catch that”.
 
