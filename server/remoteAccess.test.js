@@ -221,6 +221,18 @@ test("getListenPlan allowLan listens on all interfaces and skips Tailscale socke
   assert.strictEqual(plan.loopback, "127.0.0.1");
 });
 
+test("getListenPlan preferTailscaleSocket keeps Tailscale + LAN sockets", () => {
+  const plan = getListenPlan({
+    allowLan: true,
+    tailscaleIp: "100.64.1.2",
+    preferTailscaleSocket: true,
+    lanIpv4: "192.168.1.20",
+  });
+  assert.strictEqual(plan.allInterfaces, false);
+  assert.strictEqual(plan.tailscale, "100.64.1.2");
+  assert.strictEqual(plan.lan, "192.168.1.20");
+});
+
 test("getListenPlan without allowLan keeps a Tailscale IPv4", () => {
   const plan = getListenPlan({ allowLan: false, tailscaleIp: "100.64.1.2" });
   assert.strictEqual(plan.tailscale, "100.64.1.2");

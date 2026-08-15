@@ -195,16 +195,35 @@ function isAllowedPeer(addr, opts) {
  * What to listen on. A leftover stored host of 0.0.0.0 is not allowLan.
  * allInterfaces only from allowLan or an explicit env host of 0.0.0.0 / ::.
  */
-function getListenPlan({ allowLan, tailscaleIp, envHost } = {}) {
-  const allInterfaces = Boolean(allowLan) || isAllInterfacesHost(envHost);
+function getListenPlan({
+  allowLan,
+  tailscaleIp,
+  envHost,
+  preferTailscaleSocket,
+  lanIpv4,
+} = {}) {
+  // 0.0.0.0 would steal the Tailscale IP and block HTTPS on the same port
+  // (Windows). When we have a cert, bind Tailscale + LAN as separate sockets.
+  const allInterfaces =
+    (Boolean(allowLan) || isAllInterfacesHost(envHost)) && !preferTailscaleSocket;
   let tailscale = null;
   if (!allInterfaces && parseIpv4(tailscaleIp)) {
     tailscale = tailscaleIp;
+  }
+  let lan = null;
+  if (
+    allowLan &&
+    !allInterfaces &&
+    parseIpv4(lanIpv4) &&
+    lanIpv4 !== tailscale
+  ) {
+    lan = lanIpv4;
   }
   return {
     loopback: "127.0.0.1",
     tailscale,
     allInterfaces,
+    lan,
   };
 }
 

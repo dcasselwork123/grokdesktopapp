@@ -515,6 +515,8 @@ async function createServer({
   let currentTailscaleIp = detectTailscaleIpSync() || null;
   let loopbackServer = null;
   let allInterfacesServer = null;
+  let lanServer = null;
+  let lanListenIp = null;
   let tailscaleServer = null;
   let tailscaleListenIp = null;
   let tailscaleHttps = false;
@@ -529,6 +531,7 @@ async function createServer({
     if (allInterfacesServer && allInterfacesServer.listening) {
       servers.push(allInterfacesServer);
     }
+    if (lanServer && lanServer.listening) servers.push(lanServer);
     if (tailscaleServer && tailscaleServer.listening) servers.push(tailscaleServer);
   }
 
@@ -598,7 +601,7 @@ async function createServer({
           `[httpApi] 0.0.0.0:${boundPort} already in use — loopback stays up (Windows often cannot bind both).`
         );
       } else if (
-        kind === "tailscale" &&
+        (kind === "tailscale" || kind === "lan") &&
         (code === "EADDRNOTAVAIL" || code === "EADDRINUSE")
       ) {
         console.warn(
@@ -640,6 +643,8 @@ async function createServer({
       allowLan: currentAllowLan,
       tailscaleIp: currentTailscaleIp,
       envHost: process.env.GROK_DESKTOP_HOST,
+      preferTailscaleSocket: wantHttps,
+      lanIpv4: currentAllowLan ? getLanIpv4() : null,
     });
 
     if (plan.allInterfaces) {
@@ -648,6 +653,11 @@ async function createServer({
         tailscaleServer = null;
         tailscaleListenIp = null;
         tailscaleHttps = false;
+      }
+      if (lanServer) {
+        await closeHttpServer(lanServer);
+        lanServer = null;
+        lanListenIp = null;
       }
       if (!allInterfacesServer) {
         allInterfacesServer = await tryListenExtra("0.0.0.0", "all");
@@ -693,6 +703,23 @@ async function createServer({
           );
         }
       }
+
+      const wantLan = plan.lan || null;
+      if (!wantLan) {
+        if (lanServer) {
+          await closeHttpServer(lanServer);
+          lanServer = null;
+          lanListenIp = null;
+        }
+      } else if (!lanServer || lanListenIp !== wantLan) {
+        if (lanServer) {
+          await closeHttpServer(lanServer);
+          lanServer = null;
+          lanListenIp = null;
+        }
+        lanServer = await tryListenExtra(wantLan, "lan");
+        lanListenIp = lanServer ? wantLan : null;
+      }
     }
 
     refreshServers();
@@ -712,6 +739,11 @@ async function createServer({
     if (allInterfacesServer) {
       await closeHttpServer(allInterfacesServer);
       allInterfacesServer = null;
+    }
+    if (lanServer) {
+      await closeHttpServer(lanServer);
+      lanServer = null;
+      lanListenIp = null;
     }
     if (tailscaleServer) {
       await closeHttpServer(tailscaleServer);
@@ -925,13 +957,16 @@ async function createServer({
       }
 
       if (pathname === "/api/remote/rotate" && req.method === "POST") {
-        const result = rotateToken();
-        currentToken = result.token;
+        const rotated = rotateToken();
+        currentToken = rotated.token;
         remote = currentRemoteInfo();
         extraHeaders["Set-Cookie"] = cookieHeader(currentToken, {
-        secure: isHttpsRequest(req),
-      });
-        sendJson(res, 200, result, extraHeaders);
+          secure: isHttpsRequest(req),
+        });
+        const payload = toLoopbackRemoteInfo(remote);
+        payload.seenFolders = getSeenFolders();
+        payload.permissionMode = getPermissionMode();
+        sendJson(res, 200, payload, extraHeaders);
         return;
       }
 
