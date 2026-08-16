@@ -99,7 +99,7 @@ Server: `server/speechToText.js` (`createLiveTranscriber`). UI: `renderer/app.js
 
 ### Slash commands (app-handled)
 
-Typing `/` in an empty composer opens a command menu (filter as you type; ↑/↓, Tab/Enter, Esc).
+Typing `/` in an empty composer opens a command menu (filter as you type; ↑/↓, Tab/Enter, Esc). `/new` and `/clear` are listed separately; both start a fresh draft.
 
 | Command | Behavior |
 |---------|----------|

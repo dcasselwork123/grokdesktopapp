@@ -59,7 +59,7 @@ Then open http://127.0.0.1:3847. The setup gate is the same.
 | **Background turns** | Switching chats does not kill a run that is still going |
 | **Queue** | Type a follow-up while a turn is running; it sends when Grok is free |
 | **`/btw`** | Side chat in a new window (or tab) with a fork of the current session |
-| **`/` menu** | Type `/` for New chat, Side chat, Imagine, Export, Help (`/clear` / `/new` still work) |
+| **`/` menu** | Type `/` for New chat, Clear, Side chat, Imagine, Export, Help |
 | **`/imagine`** | Ask Grok to generate an image from a description |
 | **`/export`** | Download the open chat as Markdown |
 | **`/clear` / `/new`** | Fresh draft in the same folder |

@@ -2364,9 +2364,15 @@
     {
       id: "new",
       cmd: "/new",
-      aliases: ["/clear"],
       label: "New chat",
       hint: "Fresh draft in this folder",
+      action: "new",
+    },
+    {
+      id: "clear",
+      cmd: "/clear",
+      label: "Clear",
+      hint: "Same as /new — fresh draft in this folder",
       action: "new",
     },
     {
