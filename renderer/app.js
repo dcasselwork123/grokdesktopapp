@@ -3683,7 +3683,22 @@
       /* ignore */
     }
     autoResizePrompt();
+    scrollPromptToFollowVoice();
     unlockPrompt({ focus: true });
+  }
+
+  function scrollPromptToFollowVoice() {
+    const el = els.prompt;
+    if (!el) return;
+    const pin = () => {
+      try {
+        el.scrollTop = el.scrollHeight;
+      } catch {
+        /* ignore */
+      }
+    };
+    pin();
+    requestAnimationFrame(pin);
   }
 
   function revertVoiceDraft() {
