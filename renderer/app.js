@@ -2406,16 +2406,44 @@
       rec.mode = "answered";
     } else if (rec.mode === "submitting" || rec.mode === "answered") {
       /* keep */
-    } else if (state.liveShell === shell && state.running) {
+    } else if (
+      (state.liveShell === shell && state.running) ||
+      (state.running && state.streamSessionId === state.activeSessionId) ||
+      state.awaitingAnswers
+    ) {
       rec.mode = "pending";
-    } else if (state.running && state.streamSessionId === state.activeSessionId) {
-      rec.mode = "pending";
-    } else if (rec.mode === "expired") {
-      /* stay expired unless a live run restore flips it above */
-    } else {
+    } else if (
+      rec.toolStatus === "done" ||
+      rec.toolStatus === "failed" ||
+      rec.toolStatus === "cancelled"
+    ) {
       rec.mode = "expired";
+    } else {
+      rec.mode = "pending";
     }
     renderQuestionCard(shell, rec);
+  }
+
+  function promptLooksIdle() {
+    if (!els.prompt) return true;
+    if (String(els.prompt.value || "").trim()) return false;
+    if (state.attachments && state.attachments.length) return false;
+    if (state.voice && state.voice.phase && state.voice.phase !== "idle") return false;
+    return true;
+  }
+
+  function latestPendingQuestionRec() {
+    if (!els.messages) return null;
+    const cards = els.messages.querySelectorAll(".question-card.pending");
+    for (let i = cards.length - 1; i >= 0; i--) {
+      const rec = cards[i]._askRec;
+      if (rec && rec.mode === "pending") return rec;
+    }
+    return null;
+  }
+
+  function isRecommendedOptionLabel(label) {
+    return /\(\s*recommended\s*\)/i.test(String(label || ""));
   }
 
   function applyPendingQuestions(shell, run) {
@@ -2596,16 +2624,28 @@
       title.className = "question-card-summary-label";
       title.textContent = "You chose";
       sum.appendChild(title);
-      for (const a of ask.answers || []) {
+      const pairs = ask.answers && ask.answers.length
+        ? ask.answers
+        : (ask.questions || []).map((q) => ({ question: q.question, answer: "" }));
+      for (const a of pairs) {
         const row = document.createElement("div");
         row.className = "question-card-summary-row";
-        const q = document.createElement("div");
-        q.className = "question-card-summary-q";
-        q.textContent = a.question || "";
+        if (a.question) {
+          const q = document.createElement("div");
+          q.className = "question-card-summary-q";
+          q.textContent = a.question;
+          row.appendChild(q);
+        }
         const ans = document.createElement("div");
         ans.className = "question-card-summary-a";
-        ans.textContent = a.answer || "";
-        row.appendChild(q);
+        const check = document.createElement("span");
+        check.className = "question-card-check";
+        check.setAttribute("aria-hidden", "true");
+        check.textContent = "✓";
+        const lab = document.createElement("span");
+        lab.textContent = a.answer || "";
+        ans.appendChild(check);
+        ans.appendChild(lab);
         row.appendChild(ans);
         sum.appendChild(row);
       }
@@ -2662,28 +2702,48 @@
     const pick =
       rec.picks[step] || (rec.picks[step] = { selected: new Set(), otherText: "", otherOpen: false });
 
-    q.options.forEach((opt, i) => {
-      if (opt.isOther) return;
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "question-opt" + (q.multiSelect && pick.selected.has(i) ? " selected" : "");
-      btn.disabled = disabled;
+    let optNum = 0;
+    function decorateOptionButton(btn, opt, number) {
+      const recommended = isRecommendedOptionLabel(opt.label);
+      if (recommended) btn.classList.add("recommended");
+      const main = document.createElement("span");
+      main.className = "question-opt-main";
+      if (number > 0 && number <= 9) {
+        const n = document.createElement("span");
+        n.className = "question-opt-num";
+        n.textContent = String(number);
+        main.appendChild(n);
+      }
+      const body = document.createElement("span");
+      body.className = "question-opt-body";
       const lab = document.createElement("span");
       lab.className = "question-opt-label";
       lab.textContent = opt.label;
-      btn.appendChild(lab);
+      body.appendChild(lab);
       if (opt.description) {
         const desc = document.createElement("span");
         desc.className = "question-opt-desc";
         desc.textContent = opt.description;
-        btn.appendChild(desc);
+        body.appendChild(desc);
       }
       if (opt.preview) {
         const prev = document.createElement("span");
         prev.className = "question-opt-preview";
         prev.textContent = opt.preview;
-        btn.appendChild(prev);
+        body.appendChild(prev);
       }
+      main.appendChild(body);
+      btn.appendChild(main);
+    }
+
+    q.options.forEach((opt, i) => {
+      if (opt.isOther) return;
+      optNum += 1;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "question-opt" + (q.multiSelect && pick.selected.has(i) ? " selected" : "");
+      btn.disabled = disabled;
+      decorateOptionButton(btn, opt, optNum);
       btn.addEventListener("click", () => {
         if (q.multiSelect) {
           if (pick.selected.has(i)) pick.selected.delete(i);
@@ -2707,16 +2767,8 @@
       toggle.type = "button";
       toggle.className = "question-opt other-toggle";
       toggle.disabled = disabled;
-      const tLab = document.createElement("span");
-      tLab.className = "question-opt-label";
-      tLab.textContent = other.label || "Other…";
-      toggle.appendChild(tLab);
-      if (other.description) {
-        const d = document.createElement("span");
-        d.className = "question-opt-desc";
-        d.textContent = other.description;
-        toggle.appendChild(d);
-      }
+      optNum += 1;
+      decorateOptionButton(toggle, other, optNum);
       const field = document.createElement("div");
       field.className =
         "question-other-field" + (pick.otherOpen || pick.otherText ? "" : " hidden");
@@ -2780,6 +2832,31 @@
       sending.className = "question-card-sending";
       sending.textContent = "Sending…";
       el.appendChild(sending);
+    } else if (rec.mode === "pending" && !isPhoneUi()) {
+      const hint = document.createElement("div");
+      hint.className = "question-card-hint";
+      hint.textContent = "1–9 to choose";
+      el.appendChild(hint);
+    }
+
+    if (rec.mode === "pending" && !rec.didFocus) {
+      rec.didFocus = true;
+      try {
+        el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      } catch {
+        /* ignore */
+      }
+      if (promptLooksIdle()) {
+        try {
+          el.focus({ preventScroll: true });
+        } catch {
+          try {
+            el.focus();
+          } catch {
+            /* ignore */
+          }
+        }
+      }
     }
 
     scrollToBottom();
@@ -5652,12 +5729,23 @@
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === "Tab" || e.key === "Escape") return;
     const tag = (e.target && e.target.tagName) || "";
-    if (tag !== "TEXTAREA" && tag !== "INPUT" && tag !== "SELECT") {
-      const card = e.target && e.target.closest && e.target.closest(".question-card");
-      if (card && card._askRec && /^[1-9]$/.test(e.key)) {
-        e.preventDefault();
-        selectQuestionOptionByIndex(card._askRec, Number(e.key) - 1);
-        return;
+    if (/^[1-9]$/.test(e.key)) {
+      const inOther =
+        tag === "INPUT" &&
+        e.target &&
+        e.target.classList &&
+        e.target.classList.contains("question-other-input");
+      if (!inOther) {
+        const focusedCard =
+          e.target && e.target.closest ? e.target.closest(".question-card") : null;
+        const rec =
+          (focusedCard && focusedCard._askRec) ||
+          (promptLooksIdle() ? latestPendingQuestionRec() : null);
+        if (rec && rec.mode === "pending") {
+          e.preventDefault();
+          selectQuestionOptionByIndex(rec, Number(e.key) - 1);
+          return;
+        }
       }
     }
     if (tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT") return;
