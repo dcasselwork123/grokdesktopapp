@@ -2231,6 +2231,56 @@
     refreshUsage();
   }
 
+  /** Wipe this session's stored context; stay in the same chat. */
+  async function clearCurrentSession() {
+    closeSlashMenu();
+    if (els.prompt) {
+      els.prompt.value = "";
+      autoResizePrompt();
+    }
+    clearAttachments();
+    clearPromptQueue();
+
+    const id = state.activeSessionId;
+    if (!id) {
+      startNewSession({ cwd: rememberedCwd() || undefined });
+      return;
+    }
+
+    if (state.running || state.abortController) {
+      try {
+        await stopRun();
+      } catch {
+        /* still try to clear */
+      }
+    }
+
+    try {
+      const result = await api(`/api/sessions/${encodeURIComponent(id)}/clear`, {
+        method: "POST",
+      });
+      state.draftMode = true;
+      setActiveSessionId(id);
+      if (result && result.session) {
+        state.sessions = state.sessions.map((s) =>
+          s.id === id ? { ...s, ...result.session, numMessages: 0 } : s
+        );
+        setActiveMeta(result.session);
+      }
+      showEmptyState();
+      renderSessionList();
+      document.body.classList.remove("sidebar-open");
+      unlockPrompt({ focus: true });
+      refreshUsage();
+      showReconnectStatus(
+        "Chat cleared. The next message starts this session with no prior context.",
+        "ok"
+      );
+    } catch (err) {
+      showReconnectStatus(networkErrorMessage(err), "warn");
+    }
+  }
+
   function guessDefaultCwd() {
     // Prefer last session cwd, else leave blank (server uses process.cwd)
     if (state.sessions[0]?.cwd) return state.sessions[0].cwd;
@@ -2372,8 +2422,8 @@
       id: "clear",
       cmd: "/clear",
       label: "Clear",
-      hint: "Same as /new — fresh draft in this folder",
-      action: "new",
+      hint: "Wipe this chat's context; stay in the same session",
+      action: "clear",
     },
     {
       id: "btw",
@@ -2539,6 +2589,12 @@
       startNewSession({ cwd: rememberedCwd() || undefined });
       return;
     }
+    if (item.action === "clear") {
+      els.prompt.value = "";
+      autoResizePrompt();
+      void clearCurrentSession();
+      return;
+    }
     if (item.action === "btw") {
       els.prompt.value = "";
       autoResizePrompt();
@@ -2620,12 +2676,19 @@
     const raw = text.trim();
     if (!raw.startsWith("/")) return false;
     const cmd = raw.split(/\s+/)[0].toLowerCase();
-    if (cmd === "/clear" || cmd === "/new") {
+    if (cmd === "/new") {
       els.prompt.value = "";
       autoResizePrompt();
       clearAttachments();
       closeSlashMenu();
       startNewSession({ cwd: rememberedCwd() || undefined });
+      return true;
+    }
+    if (cmd === "/clear") {
+      els.prompt.value = "";
+      autoResizePrompt();
+      closeSlashMenu();
+      void clearCurrentSession();
       return true;
     }
     if (cmd === "/btw") {
@@ -2738,6 +2801,8 @@
     const forkFrom = state.pendingForkFrom || null;
     if (forkFrom) state.pendingForkFrom = null;
     const isNew = state.draftMode || !state.activeSessionId || cwdMismatch || !!forkFrom;
+    const reuseSessionId =
+      state.activeSessionId && !cwdMismatch && !forkFrom ? state.activeSessionId : null;
 
     state.sendInFlight = true;
     appendUserMessage(
@@ -2762,7 +2827,7 @@
       newSession: isNew,
       clientTurnId,
     };
-    if (!isNew) body.sessionId = state.activeSessionId;
+    if (reuseSessionId) body.sessionId = reuseSessionId;
     if (forkFrom) body.forkFrom = forkFrom;
     if (cwd) body.cwd = cwd;
     if (!isPhoneUi()) body.permissionMode = getPermissionMode();

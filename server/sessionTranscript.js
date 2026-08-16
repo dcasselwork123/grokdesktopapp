@@ -88,6 +88,84 @@ function writeDesktopTitle(sessionPath, title) {
   return cleaned;
 }
 
+function writeDesktopMeta(sessionPath, next) {
+  const file = desktopMetaPath(sessionPath);
+  const data = next && typeof next === "object" && !Array.isArray(next) ? { ...next } : {};
+  for (const key of Object.keys(data)) {
+    if (data[key] === undefined) delete data[key];
+  }
+  if (Object.keys(data).length === 0) {
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      /* already gone */
+    }
+    return {};
+  }
+  fs.mkdirSync(sessionPath, { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n", "utf8");
+  return data;
+}
+
+function isClearedSessionStub(sessionPath) {
+  if (!sessionPath) return false;
+  return readDesktopMeta(sessionPath).cleared === true;
+}
+
+/**
+ * Wipe conversation / rewind / tool state in place so the session still
+ * appears in the sidebar, but Grok has no prior context.
+ */
+function clearSessionDir(sessionPath, { id, cwd, createdAt, title } = {}) {
+  if (!sessionPath || !fs.existsSync(sessionPath)) {
+    const err = new Error("Session folder missing on disk");
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+
+  const prev = readDesktopMeta(sessionPath);
+  const keepTitle = sanitizeTitle(title != null ? title : prev.title);
+
+  for (const name of fs.readdirSync(sessionPath)) {
+    fs.rmSync(path.join(sessionPath, name), { recursive: true, force: true });
+  }
+
+  const desktop = {
+    cleared: true,
+    clearedAt: new Date().toISOString(),
+  };
+  if (keepTitle) desktop.title = keepTitle;
+  writeDesktopMeta(sessionPath, desktop);
+
+  const sessionId = id || path.basename(sessionPath);
+  const summary = {
+    info: { id: sessionId, cwd: cwd || null },
+    created_at: createdAt || new Date().toISOString(),
+    last_active_at: new Date().toISOString(),
+    num_messages: 0,
+    num_chat_messages: 0,
+  };
+  fs.writeFileSync(
+    path.join(sessionPath, "summary.json"),
+    JSON.stringify(summary, null, 2) + "\n",
+    "utf8"
+  );
+
+  return synthesizeSessionMeta(sessionPath, cwd);
+}
+
+/**
+ * If this folder is a /clear stub, remove it so `grok --session-id` can
+ * recreate the same id. Returns the desktop meta (title) to restore later.
+ */
+function takeClearedSessionStub(sessionPath) {
+  if (!sessionPath || !fs.existsSync(sessionPath)) return null;
+  if (!isClearedSessionStub(sessionPath)) return null;
+  const desktop = readDesktopMeta(sessionPath);
+  fs.rmSync(sessionPath, { recursive: true, force: true });
+  return desktop;
+}
+
 function hasUnclosedString(text) {
   let inStr = false;
   let esc = false;
@@ -657,6 +735,10 @@ module.exports = {
   looksLikeSessionDir,
   readDesktopMeta,
   writeDesktopTitle,
+  writeDesktopMeta,
+  isClearedSessionStub,
+  clearSessionDir,
+  takeClearedSessionStub,
   sanitizeTitle,
   LARGE_FILE_BYTES,
   MAX_TITLE_LEN,

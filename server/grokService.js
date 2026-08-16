@@ -11,6 +11,8 @@ const {
   synthesizeSessionMeta,
   looksLikeSessionDir,
   writeDesktopTitle,
+  clearSessionDir,
+  takeClearedSessionStub,
 } = require("./sessionTranscript");
 const { isSafeSessionId, resolveUnderSessionsRoot } = require("./sessionId");
 
@@ -1031,7 +1033,17 @@ function runPrompt({
   refreshGrokBinary();
 
   const imageList = Array.isArray(images) ? images.filter(Boolean) : [];
-  const requestedResume = !!(sessionId && !newSession);
+  let restoreTitle = null;
+  let consumedClearStub = false;
+  if (sessionId && !forkFrom) {
+    const existingPath = findSessionPath(sessionId);
+    const stub = existingPath ? takeClearedSessionStub(existingPath) : null;
+    if (stub) {
+      consumedClearStub = true;
+      if (stub.title) restoreTitle = stub.title;
+    }
+  }
+  const requestedResume = !!(sessionId && !newSession && !consumedClearStub);
   const effectivePrompt =
     imageList.length > 0 ? buildImagePrompt(prompt, imageList) : prompt || "";
 
@@ -1413,11 +1425,12 @@ function runPrompt({
   } else {
     startChild({
       resumeId: requestedResume ? sessionId : null,
-      forkId: newSession && sessionId ? sessionId : null,
+      forkId: (newSession || consumedClearStub) && sessionId ? sessionId : null,
       isResume: requestedResume,
       isFork: false,
       writeDebug: requestedResume,
     });
+    if (restoreTitle) restoreDesktopTitleSoon(sessionId, restoreTitle);
   }
 
   emitter.kill = () => {
@@ -1727,6 +1740,52 @@ async function archiveSession(sessionId) {
 }
 
 /**
+ * Wipe this session's conversation and tool state without deleting the
+ * sidebar entry. Next send must use newSession + the same id.
+ */
+function clearSession(sessionId) {
+  const session = findSessionById(sessionId);
+  if (!session) {
+    const err = new Error("Session not found");
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+  if (!session.path || !fs.existsSync(session.path)) {
+    const err = new Error("Session folder missing on disk");
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+
+  const updated = clearSessionDir(session.path, {
+    id: sessionId,
+    cwd: session.cwd,
+    createdAt: session.createdAt,
+    title: session.title,
+  });
+  return { id: sessionId, session: updated, messages: [] };
+}
+
+function restoreDesktopTitleSoon(sessionId, title) {
+  const cleaned = String(title || "").trim();
+  if (!sessionId || !cleaned) return;
+  let attempts = 40;
+  const tick = () => {
+    const sessionPath = findSessionPath(sessionId);
+    if (sessionPath && fs.existsSync(sessionPath)) {
+      try {
+        writeDesktopTitle(sessionPath, cleaned);
+      } catch {
+        /* grok may still be creating the folder */
+      }
+      return;
+    }
+    attempts -= 1;
+    if (attempts > 0) setTimeout(tick, 150);
+  };
+  setTimeout(tick, 200);
+}
+
+/**
  * Set or clear a user-chosen sidebar title for a session.
  * Empty title removes the override so the generated title is used again.
  */
@@ -1837,6 +1896,7 @@ module.exports = {
   buildExitErrorMessage,
   deleteSession,
   archiveSession,
+  clearSession,
   renameSession,
   bulkSessionAction,
   loadSessionMessages,

@@ -11,6 +11,9 @@ const {
   synthesizeSessionMeta,
   looksLikeSessionDir,
   writeDesktopTitle,
+  isClearedSessionStub,
+  clearSessionDir,
+  takeClearedSessionStub,
 } = require("./sessionTranscript");
 
 let failed = 0;
@@ -333,6 +336,60 @@ test("synthesizeSessionMeta for summary-less dir uses first user line and mtime"
     assert.ok(meta.updatedAt);
     assert.ok(Date.parse(meta.updatedAt) > 0);
     assert.ok(looksLikeSessionDir(path.basename(sessionPath), sessionPath));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("clearSessionDir wipes transcript files and marks a stub", () => {
+  const dir = tmpDir();
+  const sessionPath = path.join(dir, "019bbbbb-cccc-4ddd-8eee-ffffffffffff");
+  try {
+    fs.mkdirSync(sessionPath);
+    fs.writeFileSync(path.join(sessionPath, "updates.jsonl"), "old\n", "utf8");
+    fs.writeFileSync(path.join(sessionPath, "chat_history.jsonl"), "old\n", "utf8");
+    fs.writeFileSync(path.join(sessionPath, "prompt_context.json"), "{}", "utf8");
+    fs.mkdirSync(path.join(sessionPath, "terminal"));
+    writeDesktopTitle(sessionPath, "My saved title");
+
+    const meta = clearSessionDir(sessionPath, {
+      id: "019bbbbb-cccc-4ddd-8eee-ffffffffffff",
+      cwd: "E:\\Dev\\GrokDesktop",
+      title: "My saved title",
+    });
+
+    assert.strictEqual(meta.id, "019bbbbb-cccc-4ddd-8eee-ffffffffffff");
+    assert.strictEqual(meta.title, "My saved title");
+    assert.strictEqual(meta.cwd, "E:\\Dev\\GrokDesktop");
+    assert.strictEqual(meta.numMessages, 0);
+    assert.ok(isClearedSessionStub(sessionPath));
+    assert.ok(!fs.existsSync(path.join(sessionPath, "updates.jsonl")));
+    assert.ok(!fs.existsSync(path.join(sessionPath, "chat_history.jsonl")));
+    assert.ok(!fs.existsSync(path.join(sessionPath, "prompt_context.json")));
+    assert.ok(!fs.existsSync(path.join(sessionPath, "terminal")));
+    assert.ok(fs.existsSync(path.join(sessionPath, "summary.json")));
+
+    const loaded = loadTranscript(sessionPath);
+    assert.deepStrictEqual(loaded.messages, []);
+
+    const stub = takeClearedSessionStub(sessionPath);
+    assert.ok(stub);
+    assert.strictEqual(stub.title, "My saved title");
+    assert.ok(!fs.existsSync(sessionPath));
+    assert.strictEqual(takeClearedSessionStub(sessionPath), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("takeClearedSessionStub leaves a live session alone", () => {
+  const dir = tmpDir();
+  const sessionPath = path.join(dir, "019ccccc-dddd-4eee-8fff-000000000000");
+  try {
+    fs.mkdirSync(sessionPath);
+    fs.writeFileSync(path.join(sessionPath, "updates.jsonl"), "keep\n", "utf8");
+    assert.strictEqual(takeClearedSessionStub(sessionPath), null);
+    assert.ok(fs.existsSync(path.join(sessionPath, "updates.jsonl")));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

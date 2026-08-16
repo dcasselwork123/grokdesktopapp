@@ -19,6 +19,7 @@ const {
   getLoginStatus,
   bulkSessionAction,
   renameSession,
+  clearSession,
   getUsageSnapshot,
 } = require("./grokService");
 const { transcribeAudio, createLiveTranscriber, decodePcmPayload } = require("./speechToText");
@@ -1017,6 +1018,34 @@ async function createServer({
             { error: err.message || "Usage unavailable", weekly: null, session: null },
             extraHeaders
           );
+        }
+        return;
+      }
+
+      if (pathname.startsWith("/api/sessions/") && pathname.endsWith("/clear") && req.method === "POST") {
+        const rest = pathname.slice("/api/sessions/".length);
+        const id = decodeURIComponent(rest.slice(0, -"/clear".length));
+        if (isRejectedSessionId(id)) {
+          sendJson(res, 400, { error: "Invalid session id" }, extraHeaders);
+          return;
+        }
+        const live = findActiveRunBySessionId(activeRuns, id);
+        if (live && !live.done) {
+          try {
+            live.emitter.kill();
+          } catch {
+            /* ignore */
+          }
+        }
+        try {
+          const result = clearSession(id);
+          const session = result.session
+            ? (({ path: _p, ...rest }) => rest)(result.session)
+            : null;
+          sendJson(res, 200, { id: result.id, session, messages: [] }, extraHeaders);
+        } catch (err) {
+          const status = err.code === "NOT_FOUND" ? 404 : 500;
+          sendJson(res, status, { error: err.message || String(err) }, extraHeaders);
         }
         return;
       }

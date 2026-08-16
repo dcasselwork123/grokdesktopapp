@@ -99,12 +99,12 @@ Server: `server/speechToText.js` (`createLiveTranscriber`). UI: `renderer/app.js
 
 ### Slash commands (app-handled)
 
-Typing `/` in an empty composer opens a command menu (filter as you type; ↑/↓, Tab/Enter, Esc). `/new` and `/clear` are listed separately; both start a fresh draft.
+Typing `/` in an empty composer opens a command menu (filter as you type; ↑/↓, Tab/Enter, Esc). `/new` starts a new draft; `/clear` wipes the open session in place.
 
 | Command | Behavior |
 |---------|----------|
-| `/clear` | Clears the UI and starts a **new** draft session (same folder). Alias of “fresh chat”. |
-| `/new` | Same as `/clear`. |
+| `/clear` | Wipes the **current** session’s conversation and tool context on disk. Same session id and folder; the next message starts with no prior context. If nothing is open, same as `/new`. |
+| `/new` | Starts a **new** draft session (same folder). |
 | `/btw [message]` | Opens a **side chat** in a new window (Electron) or browser tab. Forks the current session so the aside has context, without interrupting the main turn. |
 | `/imagine [prompt]` | Fills a generate-image prompt (or sends one if a description is included). |
 | `/export` | Downloads the open chat as Markdown. |
