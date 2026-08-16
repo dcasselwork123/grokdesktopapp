@@ -67,7 +67,7 @@ Persist as `permissionMode` in `~/.grok-desktop/config.json`. Do not take a perm
 
 ### Electron chrome / CSP
 
-- **CSP** in `renderer/index.html` `<head>`: `default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'self'; form-action 'self'`. Keep the critical inline `<style>`; no `unsafe-inline` scripts.
+- **CSP** in `renderer/index.html` `<head>`: `default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; base-uri 'self'; form-action 'self'`. Keep the critical inline `<style>`; no `unsafe-inline` scripts. Audio worklet: `renderer/pcm-tap-worklet.js`.
 - **`openExternal` / context-menu “Open link”:** only `http:` and `https:` (`server/externalUrl.js` → `isSafeExternalUrl`). Deny `file:`, `javascript:`, `data:`, custom protocols.
 - **`will-navigate` / `will-redirect`:** only the API origin (`http://127.0.0.1:<port>` / `localhost`). If the API is not up yet, deny navigation away from the current URL. Always `{ action: "deny" }` for in-window popups.
 

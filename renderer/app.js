@@ -150,8 +150,11 @@
       stream: null,
       ctx: null,
       processor: null,
+      worklet: null,
       source: null,
       mute: null,
+      poll: null,
+      pcmSent: 0,
       chunks: [],
       sampleRate: 16000,
       sessionId: null,
@@ -3769,8 +3772,17 @@
       clearInterval(v.timer);
       v.timer = null;
     }
+    if (v.poll) {
+      clearInterval(v.poll);
+      v.poll = null;
+    }
     try {
       if (v.processor) v.processor.disconnect();
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (v.worklet) v.worklet.disconnect();
     } catch {
       /* ignore */
     }
@@ -3795,6 +3807,7 @@
     }
     const ctx = v.ctx;
     v.processor = null;
+    v.worklet = null;
     v.source = null;
     v.mute = null;
     v.stream = null;
@@ -3852,6 +3865,7 @@
     if (!float32 || !float32.length || !state.voice.sessionId) return;
     const pcm = floatToPcm16Base64(float32);
     const sessionId = state.voice.sessionId;
+    state.voice.pcmSent = (state.voice.pcmSent || 0) + 1;
     state.voice.sendChain = state.voice.sendChain
       .then(async () => {
         const body = JSON.stringify({ sessionId, pcm });
@@ -3917,6 +3931,63 @@
     es.onerror = () => {
       if (state.voice.phase !== "recording") closeVoiceEvents();
     };
+  }
+
+  function startVoiceStatusPoll(sessionId) {
+    if (state.voice.poll) {
+      clearInterval(state.voice.poll);
+      state.voice.poll = null;
+    }
+    state.voice.poll = setInterval(() => {
+      if (state.voice.phase !== "recording" || state.voice.sessionId !== sessionId) return;
+      void api(`/api/stt/status?sessionId=${encodeURIComponent(sessionId)}`)
+        .then((data) => {
+          if (state.voice.sessionId !== sessionId) return;
+          if (data && data.text) updateVoiceDraft(String(data.text));
+        })
+        .catch(() => {});
+    }, 350);
+  }
+
+  function handleCapturedPcm(float32, inputRate) {
+    if (state.voice.phase !== "recording") return;
+    const copy = float32 instanceof Float32Array ? new Float32Array(float32) : new Float32Array(float32);
+    if (!state.voice.chunks) state.voice.chunks = [];
+    state.voice.chunks.push(copy);
+    const down = downsampleVoice(copy, inputRate || VOICE_TARGET_RATE, VOICE_TARGET_RATE);
+    if (!down.length) return;
+    state.voice.pcmPending.push(down);
+    state.voice.pcmCount += down.length;
+    if (state.voice.pcmCount >= 1600) flushVoicePcm();
+  }
+
+  async function attachPcmTap(ctx, source) {
+    const inputRate = ctx.sampleRate || VOICE_TARGET_RATE;
+    if (ctx.audioWorklet && typeof ctx.audioWorklet.addModule === "function") {
+      try {
+        await ctx.audioWorklet.addModule("pcm-tap-worklet.js");
+        const node = new AudioWorkletNode(ctx, "pcm-tap");
+        node.port.onmessage = (ev) => handleCapturedPcm(ev.data, inputRate);
+        const mute = ctx.createGain();
+        mute.gain.value = 0.0001;
+        source.connect(node);
+        node.connect(mute);
+        mute.connect(ctx.destination);
+        return { worklet: node, processor: null, mute };
+      } catch {
+        /* iOS / older engines fall back */
+      }
+    }
+    const processor = ctx.createScriptProcessor(4096, 1, 1);
+    const mute = ctx.createGain();
+    mute.gain.value = 0.0001;
+    processor.onaudioprocess = (e) => {
+      handleCapturedPcm(e.inputBuffer.getChannelData(0), e.inputBuffer.sampleRate || inputRate);
+    };
+    source.connect(processor);
+    processor.connect(mute);
+    mute.connect(ctx.destination);
+    return { worklet: null, processor, mute };
   }
 
   async function startLiveVoiceSession() {
@@ -4067,26 +4138,12 @@
       /* ignore */
     }
     const source = ctx.createMediaStreamSource(stream);
-    const processor = ctx.createScriptProcessor(4096, 1, 1);
-    const mute = ctx.createGain();
-    mute.gain.value = 0;
     const chunks = [];
     state.voice.pcmPending = [];
     state.voice.pcmCount = 0;
-    processor.onaudioprocess = (e) => {
-      if (state.voice.phase !== "recording") return;
-      const input = e.inputBuffer.getChannelData(0);
-      chunks.push(new Float32Array(input));
-      const down = downsampleVoice(input, ctx.sampleRate || VOICE_TARGET_RATE, VOICE_TARGET_RATE);
-      if (down.length) {
-        state.voice.pcmPending.push(down);
-        state.voice.pcmCount += down.length;
-        if (state.voice.pcmCount >= 1600) flushVoicePcm();
-      }
-    };
-    source.connect(processor);
-    processor.connect(mute);
-    mute.connect(ctx.destination);
+    state.voice.pcmSent = 0;
+    state.voice.chunks = chunks;
+    const tap = await attachPcmTap(ctx, source);
 
     if (els.prompt) {
       const caret =
@@ -4103,10 +4160,16 @@
     state.voice.stream = stream;
     state.voice.ctx = ctx;
     state.voice.source = source;
-    state.voice.processor = processor;
-    state.voice.mute = mute;
-    state.voice.chunks = chunks;
+    state.voice.processor = tap.processor;
+    state.voice.worklet = tap.worklet;
+    state.voice.mute = tap.mute;
     state.voice.sampleRate = ctx.sampleRate || VOICE_TARGET_RATE;
+    startVoiceStatusPoll(state.voice.sessionId);
+    setTimeout(() => {
+      if (state.voice.phase === "recording" && !state.voice.pcmSent) {
+        setStatus(false, "Mic is open but no audio reached Grok — try again, or check the microphone");
+      }
+    }, 1800);
     state.voice.timer = setInterval(() => {
       updateVoiceUi();
       const elapsed = (Date.now() - state.voice.startedAt) / 1000;

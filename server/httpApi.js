@@ -1152,6 +1152,25 @@ async function createServer({
         return;
       }
 
+      if (pathname === "/api/stt/status" && req.method === "GET") {
+        const id = parsed.searchParams.get("sessionId") || "";
+        if (isRejectedSessionId(id) || !liveSttSessions.has(id)) {
+          sendJson(res, 404, { error: "Voice session not found" }, extraHeaders);
+          return;
+        }
+        const record = liveSttSessions.get(id);
+        sendJson(
+          res,
+          200,
+          {
+            text: record.transcriber ? record.transcriber.getText() : "",
+            closed: !!(record.transcriber && record.transcriber.closed),
+          },
+          extraHeaders
+        );
+        return;
+      }
+
       if (pathname === "/api/stt/live" && req.method === "GET") {
         const id = parsed.searchParams.get("sessionId") || "";
         if (isRejectedSessionId(id) || !liveSttSessions.has(id)) {
