@@ -1484,7 +1484,7 @@
   }
 
   /** Minimal markdown → HTML (bold, code, fences, lists, headers, tables). */
-  function renderMarkdown(text) {
+  function renderMarkdown(text, opts = {}) {
     if (!text) return "";
     const escaped = text
       .replace(/&/g, "&amp;")
@@ -1506,14 +1506,35 @@
     html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
 
-    // generated session media: ![alt](images/1.jpg) and bare images/1.jpg
-    html = html.replace(
+    // One inline copy of each generated file. Paths already in the media
+    // strip (or seen earlier in this body) stay text so /imagine is not doubled.
+    const shown = new Set();
+    if (opts.skipMedia) {
+      for (const key of opts.skipMedia) shown.add(String(key).toLowerCase());
+    }
+    const embedMedia = (rel, alt, fromMarkdownImage) => {
+      const key = mediaKey(rel);
+      if (key && shown.has(key)) {
+        return fromMarkdownImage ? "" : escapeHtml(rel);
+      }
+      if (key) shown.add(key);
+      return renderMediaHtml(rel, alt);
+    };
+    const replaceOutsideCode = (input, re, replacer) =>
+      input
+        .split(/(<pre[\s\S]*?<\/pre>|<code>[\s\S]*?<\/code>)/gi)
+        .map((part, i) => (i % 2 === 1 ? part : part.replace(re, replacer)))
+        .join("");
+
+    html = replaceOutsideCode(
+      html,
       /!\[([^\]]*)\]\(((?:images|videos)\/[A-Za-z0-9._-]+\.(?:jpe?g|png|webp|gif|mp4|webm))\)/gi,
-      (_, alt, rel) => renderMediaHtml(rel, alt)
+      (_, alt, rel) => embedMedia(rel, alt, true)
     );
-    html = html.replace(
+    html = replaceOutsideCode(
+      html,
       /(?<!["/=])\b((?:images|videos)\/[A-Za-z0-9._-]+\.(?:jpe?g|png|webp|gif|mp4|webm))\b/gi,
-      (rel) => renderMediaHtml(rel)
+      (rel) => embedMedia(rel)
     );
 
     // headers
@@ -1528,6 +1549,7 @@
     html = html
       .split(/\n{2,}/)
       .map((block) => {
+        if (!block.trim()) return "";
         if (
           block.startsWith("<pre") ||
           block.startsWith('<div class="md-')
@@ -1543,12 +1565,14 @@
 
   function renderMediaHtml(rel, alt) {
     const url = sessionMediaUrl(rel);
+    const norm = normalizeRelMedia(rel) || rel;
     if (!url) return escapeHtml(rel);
     const label = escapeHtml(alt || rel);
+    const relAttr = escapeHtml(norm);
     if (/\.(mp4|webm)$/i.test(rel)) {
-      return `<video class="generated-media-item" src="${escapeHtml(url)}" controls playsinline></video>`;
+      return `<video class="generated-media-item" src="${escapeHtml(url)}" controls playsinline data-media-rel="${relAttr}"></video>`;
     }
-    return `<img class="generated-media-item" src="${escapeHtml(url)}" alt="${label}">`;
+    return `<img class="generated-media-item" src="${escapeHtml(url)}" alt="${label}" data-media-rel="${relAttr}">`;
   }
 
   function appendUserMessage(text, imageDataUrls = []) {
@@ -1816,6 +1840,21 @@
     return rel;
   }
 
+  function mediaKey(rel) {
+    const norm = normalizeRelMedia(rel);
+    return norm ? norm.toLowerCase() : "";
+  }
+
+  function collectMediaShown(root) {
+    const seen = new Set();
+    if (!root || typeof root.querySelectorAll !== "function") return seen;
+    root.querySelectorAll("[data-media-rel]").forEach((el) => {
+      const key = mediaKey(el.getAttribute("data-media-rel"));
+      if (key) seen.add(key);
+    });
+    return seen;
+  }
+
   function extractRelMedia(value, out, seen, depth) {
     if (value == null || depth > 8) return;
     if (typeof value === "string") {
@@ -2059,7 +2098,9 @@
       shell.mdTimer = 0;
     }
     if (!shouldRenderShell(shell)) return;
-    shell.bodyEl.innerHTML = renderMarkdown(shell.text);
+    shell.bodyEl.innerHTML = renderMarkdown(shell.text, {
+      skipMedia: shell.mediaShown,
+    });
     scrollToBottom();
   }
 
@@ -2123,10 +2164,15 @@
       chip.classList.remove("running", "done", "failed", "cancelled");
       chip.classList.add(info.status);
     }
-    const media = mediaPathsFrom(src);
-    if (media.length) showGeneratedMedia(shell, media);
-    else if (info.status === "done" && isMediaToolName(info.rawName || info.kind)) {
-      void refreshSessionMedia(shell);
+    if (
+      isMediaToolName(info.rawName) ||
+      isMediaToolName(src && (src.toolName || src.name))
+    ) {
+      const media = mediaPathsFrom(src);
+      if (media.length) showGeneratedMedia(shell, media);
+      else if (info.status === "done") {
+        void refreshSessionMedia(shell);
+      }
     }
     scrollToBottom();
   }
@@ -2351,7 +2397,7 @@
             if (m.media?.length) showGeneratedMedia(shell, m.media);
             if (m.text) {
               shell.text = m.text;
-              shell.bodyEl.innerHTML = renderMarkdown(m.text);
+              flushAssistantMarkdown(shell);
             }
           }
         }
@@ -2899,7 +2945,7 @@
         return true;
       }
       closeSlashMenu();
-      return { rewrite: `Generate an image: ${rest}` };
+      return { rewrite: `Generate one image of: ${rest}` };
     }
     return false;
   }
@@ -3260,7 +3306,7 @@
           el: last,
           toolsEl: last.querySelector(".tools"),
           mediaEl: last.querySelector(".generated-media"),
-          mediaShown: new Set(),
+          mediaShown: collectMediaShown(last),
           bodyEl,
           text: "",
           thought: "",
@@ -3282,8 +3328,10 @@
     if (!shell || !fresh) return;
     shell.el = fresh.el;
     shell.toolsEl = fresh.toolsEl;
+    const shown = shell.mediaShown ? [...shell.mediaShown] : [];
     shell.mediaEl = fresh.mediaEl || shell.mediaEl;
-    if (!shell.mediaShown) shell.mediaShown = new Set();
+    shell.mediaShown = collectMediaShown(fresh.mediaEl || fresh.el);
+    if (shown.length) showGeneratedMedia(shell, shown);
     shell.bodyEl = fresh.bodyEl;
     shell.thoughtWrap = fresh.thoughtWrap;
     shell.thoughtToggle = fresh.thoughtToggle;

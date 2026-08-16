@@ -139,15 +139,18 @@ function attachMediaToMessages(sessionPath, messages) {
     if (!msg || msg.role !== "assistant") continue;
     const found = [];
     const seen = new Set();
-    for (const p of extractMediaPaths(msg.text)) addRel(found, seen, p);
     const tools = Array.isArray(msg.tools) ? msg.tools : [];
     let mediaToolCount = 0;
     for (const tool of tools) {
-      if (isMediaToolName(tool && (tool.name || tool.title))) mediaToolCount += 1;
+      if (!isMediaToolName(tool && (tool.name || tool.title))) continue;
+      mediaToolCount += 1;
       for (const p of extractMediaPaths(tool)) addRel(found, seen, p);
       if (Array.isArray(tool && tool.media)) {
         for (const p of tool.media) addRel(found, seen, p);
       }
+    }
+    if (mediaToolCount > 0) {
+      for (const p of extractMediaPaths(msg.text)) addRel(found, seen, p);
     }
     if (mediaToolCount > 0 && found.length < mediaToolCount) {
       for (const rel of listed) {

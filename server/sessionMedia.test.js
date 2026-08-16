@@ -96,6 +96,68 @@ test("attachMediaToMessages uses tool output then leftover files", () => {
   }
 });
 
+test("attachMediaToMessages ignores images/ paths from non-media tools", () => {
+  const dir = tmpDir();
+  try {
+    fs.mkdirSync(path.join(dir, "images"));
+    fs.writeFileSync(path.join(dir, "images", "1.jpg"), "a");
+    const messages = [
+      { role: "user", text: "search the repo" },
+      {
+        role: "assistant",
+        text: "found 18 matches",
+        tools: [
+          {
+            name: "grep",
+            status: "completed",
+            output: "renderer/app.js:1511: ![alt](images/1.jpg)",
+          },
+        ],
+      },
+    ];
+    attachMediaToMessages(dir, messages);
+    assert.deepStrictEqual(messages[1].media || [], []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("attachMediaToMessages still takes a path mentioned in assistant text", () => {
+  const dir = tmpDir();
+  try {
+    const messages = [
+      { role: "user", text: "draw a cat" },
+      {
+        role: "assistant",
+        text: "Saved as images/1.jpg",
+        tools: [{ name: "image_gen", status: "completed", media: ["images/1.jpg"] }],
+      },
+    ];
+    attachMediaToMessages(dir, messages);
+    assert.deepStrictEqual(messages[1].media, ["images/1.jpg"]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("attachMediaToMessages does not treat code talk as generated media", () => {
+  const dir = tmpDir();
+  try {
+    const messages = [
+      { role: "user", text: "why is /imagine doubled?" },
+      {
+        role: "assistant",
+        text: "renderMarkdown turns images/1.jpg into a second img tag",
+        tools: [{ name: "grep", status: "completed" }],
+      },
+    ];
+    attachMediaToMessages(dir, messages);
+    assert.deepStrictEqual(messages[1].media || [], []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 if (failed) {
   process.exitCode = 1;
   throw new Error(`${failed} test(s) failed`);
