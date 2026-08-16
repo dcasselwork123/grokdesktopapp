@@ -110,6 +110,7 @@
     turnGen: 0,
     liveSessionIds: new Set(),
     pendingReattach: null, // { sessionId, clientTurnId, startedAt, turnGen }
+    awaitingAnswers: false,
     recoverInFlight: false,
     usage: null,
     usageTimer: null,
@@ -2537,6 +2538,24 @@
     const override = rec.toolStatus === "done";
     const prompt = formatAskAnswersPrompt(pairs, override);
     try {
+      if ((state.awaitingAnswers || (state.running && state.runId)) && state.runId) {
+        try {
+          await api("/api/chat/answer", {
+            method: "POST",
+            body: JSON.stringify({
+              runId: state.runId,
+              sessionId: state.streamSessionId || state.activeSessionId,
+              answers: pairs,
+            }),
+          });
+          state.awaitingAnswers = false;
+          rec.mode = "answered";
+          renderQuestionCard(shellFromQuestionEl(rec.el) || shell, rec);
+          return;
+        } catch {
+          /* fall back to a follow-up turn */
+        }
+      }
       state.promptQueue.unshift({
         id: `q-ans-${Date.now()}`,
         text: prompt,
@@ -4015,6 +4034,7 @@
         pendingQuestions: Array.isArray(data.run.pendingQuestions)
           ? data.run.pendingQuestions
           : [],
+        awaitingAnswers: data.run.awaitingAnswers || null,
       };
     }
     if (data.runId) {
@@ -4027,6 +4047,7 @@
         pendingQuestions: Array.isArray(data.pendingQuestions)
           ? data.pendingQuestions
           : [],
+        awaitingAnswers: data.awaitingAnswers || null,
       };
     }
     return null;
@@ -4420,8 +4441,12 @@
     const turnGen = nextTurnGen();
     const onSession = (sid) => applyStreamSession(sid, shell);
 
-    setRunning(true, "Reconnecting…");
-    showReconnectStatus("Reconnecting…", "info");
+    setRunning(true, active.awaitingAnswers ? "Waiting for your choice…" : "Reconnecting…");
+    showReconnectStatus(
+      active.awaitingAnswers ? "Waiting for your choice…" : "Reconnecting…",
+      "info"
+    );
+    if (active.awaitingAnswers) state.awaitingAnswers = true;
     applyPendingQuestions(shell, active);
 
     let deferred = false;
@@ -4627,6 +4652,7 @@
   async function finishTurn(sessionId) {
     clearPendingReattach();
     hideReconnectStatus();
+    state.awaitingAnswers = false;
     setRunning(false);
     if (sessionId) state.liveSessionIds.delete(sessionId);
     state.runId = null;
@@ -4677,6 +4703,10 @@
         break;
       case "run":
         if (data.runId) state.runId = data.runId;
+        break;
+      case "awaiting_answers":
+        state.awaitingAnswers = true;
+        if (els.runningText) els.runningText.textContent = "Waiting for your choice…";
         break;
       case "status":
         if (data.message && (!shell || state.liveShell === shell)) {

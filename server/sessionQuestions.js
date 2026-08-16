@@ -286,6 +286,47 @@ function isAnswersOnlyUserText(text) {
   return !stripped;
 }
 
+function answersMapFromPairs(pairs) {
+  const map = {};
+  for (const pair of Array.isArray(pairs) ? pairs : []) {
+    const question = clipText(pair && pair.question, 800);
+    const answer = clipText(pair && (pair.answer || pair.label), 800);
+    if (!question) continue;
+    map[question] = answer;
+  }
+  return map;
+}
+
+function askStatusKey(evt) {
+  return String((evt && evt.status) || "")
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+}
+
+function isFinishedAskStatus(status) {
+  const key = String(status || "")
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+  return [
+    "completed",
+    "complete",
+    "success",
+    "done",
+    "ok",
+    "failed",
+    "error",
+    "errored",
+    "cancelled",
+    "canceled",
+  ].includes(key);
+}
+
+/** Park -p only when the ask is live (has questions and has not finished). */
+function shouldParkForAsk(evt, ask) {
+  if (!ask || !Array.isArray(ask.questions) || !ask.questions.length) return false;
+  return !isFinishedAskStatus(askStatusKey(evt));
+}
+
 function applyAnswersToAsk(entry, pairs) {
   if (!entry || !pairs || !pairs.length) return entry;
   entry.answers = pairs.map((p) => ({
@@ -337,6 +378,9 @@ module.exports = {
   parseUserAnswersBlock,
   isAnswersOnlyUserText,
   applyAnswersToAsk,
+  answersMapFromPairs,
+  shouldParkForAsk,
+  isFinishedAskStatus,
   rememberAskOnRun,
   pendingAsksOf,
   markAskAnsweredOnRun,

@@ -368,6 +368,10 @@ function registerRun(activeRuns, { runId, sessionId, emitter, clientTurnId }) {
     rememberAskOnRun(record, evt);
     broadcast(record, "grok", evt);
   });
+  emitter.on("awaitingAnswers", (data) => {
+    record.awaitingAnswers = data || true;
+    broadcast(record, "awaiting_answers", data || { sessionId: record.sessionId });
+  });
   emitter.on("sessionId", (id) => {
     record.sessionId = id;
     broadcast(record, "session", { sessionId: id });
@@ -435,6 +439,7 @@ function serializeRun(record) {
     done: !!record.done,
     clientTurnId: record.clientTurnId || null,
     pendingQuestions: pending.length ? pending : [],
+    awaitingAnswers: record.awaitingAnswers || null,
   };
 }
 
@@ -1653,6 +1658,64 @@ async function createServer({
           runs.push(serializeRun(record));
         }
         sendJson(res, 200, { runs }, extraHeaders);
+        return;
+      }
+
+      if (pathname === "/api/chat/answer" && req.method === "POST") {
+        let body;
+        try {
+          body = await readBody(req);
+        } catch {
+          sendJson(res, 400, { error: "Invalid JSON body" }, extraHeaders);
+          return;
+        }
+        if (body.sessionId != null && body.sessionId !== "" && isRejectedSessionId(body.sessionId)) {
+          sendJson(res, 400, { error: "Invalid session id" }, extraHeaders);
+          return;
+        }
+        const record =
+          (body.runId && activeRuns.get(body.runId)) ||
+          findActiveRunBySessionId(activeRuns, body.sessionId);
+        if (!record || record.done) {
+          sendJson(res, 404, { error: "No question waiting" }, extraHeaders);
+          return;
+        }
+        if (!record.awaitingAnswers) {
+          sendJson(res, 409, { error: "Turn is not waiting for an answer" }, extraHeaders);
+          return;
+        }
+        const pairs = Array.isArray(body.answers) ? body.answers : [];
+        const cleaned = pairs
+          .map((p) => ({
+            question: p && p.question != null ? String(p.question) : "",
+            answer: p && (p.answer != null ? p.answer : p.label) != null
+              ? String(p.answer != null ? p.answer : p.label)
+              : "",
+          }))
+          .filter((p) => p.question && p.answer);
+        if (!cleaned.length) {
+          sendJson(res, 400, { error: "answers required" }, extraHeaders);
+          return;
+        }
+        const ok =
+          record.emitter &&
+          typeof record.emitter.submitAnswers === "function" &&
+          record.emitter.submitAnswers(cleaned);
+        if (!ok) {
+          sendJson(res, 409, { error: "Could not submit answers" }, extraHeaders);
+          return;
+        }
+        if (record.asks && cleaned.length) {
+          const open = record.asks.find((a) => a && !a.answers);
+          markAskAnsweredOnRun(record, open && open.id, cleaned);
+        }
+        record.awaitingAnswers = null;
+        sendJson(
+          res,
+          200,
+          { ok: true, runId: record.runId, sessionId: record.sessionId },
+          extraHeaders
+        );
         return;
       }
 

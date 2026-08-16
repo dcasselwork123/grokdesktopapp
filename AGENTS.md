@@ -115,7 +115,7 @@ Other TUI slash commands (`/compact`, `/theme`, `/plan`, …) are **not** implem
 
 ### In-chat questions
 
-When Grok calls `ask_user_question`, the chat shows a **choice card** (not a tool chip): option buttons, Other…, and a stepper if there are several questions. Tapping an answer sends a follow-up in the **same session** (`<user_answers>` block). Phone and desktop share the card. Reopening the session shows what was asked and what you picked.
+When Grok calls `ask_user_question`, the chat shows a **choice card** (not a tool chip): option buttons, Other…, and a stepper if there are several questions. Headless `grok -p` is **parked** as soon as the question is live so Grok does not keep guessing. Tapping an answer continues the **same turn** over `grok agent stdio` (`x.ai/ask_user_question`). If that channel is gone, the app falls back to a same-session follow-up (`<user_answers>` block). Phone and desktop share the card. Reopening the session shows what was asked and what you picked.
 
 ### Copy transcript text
 
@@ -252,6 +252,7 @@ GrokDesktop/
 │   ├── httpApi.js          ← REST + SSE chat + static UI + token/cookie auth + /api/setup + /api/auth/login + /api/stt
 │   ├── grokService.js      ← sessions, models, spawn grok -p, image save, setup/auth/login
 │   ├── sessionQuestions.js ← parse ask_user_question + user_answers
+│   ├── grokAcp.js          ← ACP stdio client for mid-turn answers
 │   ├── speechToText.js     ← Grok STT (POST /v1/stt) using CLI auth or XAI_API_KEY
 │   ├── appUpdate.js        ← git fetch (30 min) + pull / npm install / restart
 │   ├── remoteAccess.js     ← config, token, Tailscale IP, phone URL
@@ -285,7 +286,7 @@ UI (Electron or Safari)
 |------|----------------|
 | UI look / mobile layout | `renderer/styles.css`, `renderer/index.html`, `renderer/app.js` |
 | Chat / sessions / streaming | `server/grokService.js`, `server/httpApi.js`, `renderer/app.js` |
-| **In-chat questions** | `server/sessionQuestions.js`, `server/sessionTranscript.js`, `renderer/app.js` + `styles.css` |
+| **In-chat questions** | `server/sessionQuestions.js`, `server/grokAcp.js`, `server/grokService.js`, `renderer/app.js` + `styles.css` |
 | **Setup gate / install / sign-in** | `server/grokService.js` (`getSetupStatus`, `startGrokLogin`), `server/httpApi.js`, `renderer/app.js`, `renderer/index.html`, `renderer/styles.css` |
 | Folder picker (native dialog) | `electron/main.js`, `electron/preload.js`, `renderer/app.js` |
 | Access control / first-seen folder | `server/grokService.js` (`buildArgs`), `server/remoteAccess.js`, composer in `renderer/` |

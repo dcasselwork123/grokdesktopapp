@@ -28,6 +28,10 @@ test('isPrivilegedPost("POST", "/api/chat") is false', () => {
   assert.strictEqual(isPrivilegedPost("POST", "/api/chat"), false);
 });
 
+test('isPrivilegedPost("POST", "/api/chat/answer") is false', () => {
+  assert.strictEqual(isPrivilegedPost("POST", "/api/chat/answer"), false);
+});
+
 test('isPrivilegedPost("POST", "/api/stt") is false', () => {
   assert.strictEqual(isPrivilegedPost("POST", "/api/stt"), false);
 });

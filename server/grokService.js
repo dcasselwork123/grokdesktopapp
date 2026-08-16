@@ -16,7 +16,8 @@ const {
 } = require("./sessionTranscript");
 const { attachMediaToMessages } = require("./sessionMedia");
 const { isSafeSessionId, resolveUnderSessionsRoot } = require("./sessionId");
-const { extractAskUserQuestions } = require("./sessionQuestions");
+const { extractAskUserQuestions, shouldParkForAsk } = require("./sessionQuestions");
+const { continueSessionWithAnswers } = require("./grokAcp");
 
 function getGrokHome() {
   return process.env.GROK_HOME || path.join(os.homedir(), ".grok");
@@ -760,7 +761,7 @@ function cleanupTempFile(filePath) {
 
 function createBufferedEmitter() {
   const emitter = new EventEmitter();
-  const early = { event: [], sessionId: [], error: [], end: [], status: [] };
+  const early = { event: [], sessionId: [], error: [], end: [], status: [], awaitingAnswers: [] };
   let piping = false;
   const emitBuffered = (name, payload) => {
     if (piping || emitter.listenerCount(name) > 0) {
@@ -1073,6 +1074,9 @@ function runPrompt({
   let finished = false;
   let forkedOnce = false;
   let userCancelled = false;
+  let parkedForAnswers = null;
+  let parkKilled = false;
+  let acpStarted = false;
   let currentIsResume = requestedResume;
   let watchdogWarn = null;
   let watchdogFail = null;
@@ -1243,6 +1247,13 @@ function runPrompt({
         if (evt.sessionId) resolvedSessionId = evt.sessionId;
         if (evt.type === "end" && evt.sessionId) resolvedSessionId = evt.sessionId;
         if (evt.session_id) resolvedSessionId = evt.session_id;
+        if (
+          parkedForAnswers &&
+          evt.type !== "tool_call" &&
+          evt.type !== "tool_call_update"
+        ) {
+          continue;
+        }
         if (evt.type === "available_commands") {
           emitBuffered("status", { message: "Grok is running…" });
         } else if (evt.type === "thought") {
@@ -1262,11 +1273,40 @@ function runPrompt({
                 `status=${evt.status || evt.title || ""} session=${resolvedSessionId || ""}`
             );
           }
+          if (
+            ask &&
+            shouldParkForAsk(evt, ask) &&
+            !parkedForAnswers &&
+            !userCancelled &&
+            !finished
+          ) {
+            parkedForAnswers = {
+              ask,
+              sessionId: resolvedSessionId || sessionId,
+            };
+            emitBuffered("status", { message: "Waiting for your choice…" });
+            emitBuffered("event", evt);
+            if (resolvedSessionId) emitBuffered("sessionId", resolvedSessionId);
+            emitBuffered("awaitingAnswers", {
+              sessionId: resolvedSessionId || sessionId,
+              askId: ask.id,
+              questions: ask.questions,
+            });
+            debugLog(
+              `park -p for ask id=${ask.id || "?"} session=${resolvedSessionId || sessionId}`
+            );
+            parkKilled = true;
+            killed = true;
+            killChildTree(proc);
+            continue;
+          }
           emitBuffered("status", {
             message: ask
               ? "Waiting for your choice…"
               : evt.title || evt.toolName || "Using tools…",
           });
+        } else if (parkedForAnswers && (evt.type === "text" || evt.type === "thought")) {
+          continue;
         } else if (evt.type === "text") {
           emitBuffered("status", { message: "Writing…" });
         } else if (evt.type === "end") {
@@ -1311,6 +1351,14 @@ function runPrompt({
     proc.on("close", (code) => {
       if (child !== proc) return;
       clearWatchdogs();
+      if (parkedForAnswers && parkKilled && !userCancelled && !acpStarted && !finished) {
+        child = null;
+        debugLog(
+          `parked: -p exited code=${code} waiting for answers session=${resolvedSessionId}`
+        );
+        emitBuffered("status", { message: "Waiting for your choice…" });
+        return;
+      }
       debugLog(
         `close code=${code} gotStdout=${gotStdout} session=${resolvedSessionId} ` +
           `stderrLen=${stderr.length} firstEventMs=${firstEventAt || "-"} ` +
@@ -1445,12 +1493,64 @@ function runPrompt({
     if (restoreTitle) restoreDesktopTitleSoon(sessionId, restoreTitle);
   }
 
+  async function startAcpContinuation(pairs) {
+    acpStarted = true;
+    emitBuffered("status", { message: "Continuing with your choice…" });
+    if (resolvedSessionId) clearStaleSessionLocks(resolvedSessionId);
+    try {
+      const result = await continueSessionWithAnswers({
+        grokBin: GROK_BIN,
+        sessionId: resolvedSessionId || sessionId,
+        cwd,
+        model,
+        effort,
+        permissionMode: resolvedPermissionMode,
+        answers: pairs,
+        log: debugLog,
+        shouldCancel: () => userCancelled || finished,
+        onStatus: (data) => emitBuffered("status", data),
+        onEvent: (evt) => {
+          if (evt && evt.sessionId) resolvedSessionId = evt.sessionId;
+          emitBuffered("event", evt);
+          if (resolvedSessionId) emitBuffered("sessionId", resolvedSessionId);
+        },
+      });
+      if (finished || userCancelled) return;
+      sawEndEvent = true;
+      if (result && result.sessionId) resolvedSessionId = result.sessionId;
+      finishRun(0);
+    } catch (err) {
+      if (finished) return;
+      if (userCancelled) {
+        finishRun(null);
+        return;
+      }
+      debugLog(`acp continuation failed: ${err && err.message ? err.message : err}`);
+      emitBuffered("error", err);
+      finishRun(1);
+    }
+  }
+
+  emitter.submitAnswers = (pairs) => {
+    if (finished || userCancelled || acpStarted) return false;
+    if (!parkedForAnswers) return false;
+    const list = Array.isArray(pairs) ? pairs.filter((p) => p && (p.answer || p.label)) : [];
+    if (!list.length) return false;
+    void startAcpContinuation(list);
+    return true;
+  };
+
   emitter.kill = () => {
     userCancelled = true;
     killed = true;
     clearWatchdogs();
     killChildTree(child);
-    if (!child) {
+    if (parkedForAnswers && !acpStarted) {
+      parkedForAnswers = null;
+      if (!finished) finishRun(null);
+      return;
+    }
+    if (!child && !acpStarted) {
       finishRun(null);
     }
   };

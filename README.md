@@ -56,7 +56,7 @@ Then open http://127.0.0.1:3847. The setup gate is the same.
 | **Account** | Sidebar avatar: who you’re signed in as, switch X/email, log out |
 | **Sessions** | Real Grok sessions from `~/.grok/sessions`, grouped by project. Right-click to rename; Select to archive/delete |
 | **Chat** | Dark chat UI; markdown tables; tool-call chips while Grok works |
-| **Questions** | When Grok asks a preference (`ask_user_question`), the chat shows option buttons — tap one (or Other) to continue the same session |
+| **Questions** | When Grok asks a preference (`ask_user_question`), the chat shows option buttons and **pauses the turn**. Tap one (or Other) to continue |
 | **Background turns** | Switching chats does not kill a run that is still going |
 | **Queue** | Type a follow-up while a turn is running; it sends when Grok is free |
 | **`/btw`** | Side chat in a new window (or tab) with a fork of the current session |
