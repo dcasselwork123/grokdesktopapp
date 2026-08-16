@@ -99,13 +99,18 @@ Server: `server/speechToText.js` (`createLiveTranscriber`). UI: `renderer/app.js
 
 ### Slash commands (app-handled)
 
+Typing `/` in an empty composer opens a command menu (filter as you type; ↑/↓, Tab/Enter, Esc).
+
 | Command | Behavior |
 |---------|----------|
 | `/clear` | Clears the UI and starts a **new** draft session (same folder). Alias of “fresh chat”. |
 | `/new` | Same as `/clear`. |
 | `/btw [message]` | Opens a **side chat** in a new window (Electron) or browser tab. Forks the current session so the aside has context, without interrupting the main turn. |
+| `/imagine [prompt]` | Fills a generate-image prompt (or sends one if a description is included). |
+| `/export` | Downloads the open chat as Markdown. |
+| `/help` | Reopens the command menu. |
 
-Other TUI slash commands (`/compact`, `/theme`, …) are **not** implemented in the desktop app; they would only be sent as plain text if typed.
+Other TUI slash commands (`/compact`, `/theme`, `/plan`, …) are **not** implemented in the desktop app; they would only be sent as plain text if typed.
 
 ### Copy transcript text
 

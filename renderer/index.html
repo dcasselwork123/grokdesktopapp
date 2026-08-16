@@ -145,6 +145,13 @@
           <span class="voice-dot" aria-hidden="true"></span>
           <span id="voice-strip-text">Listening…</span>
         </div>
+        <div
+          id="slash-menu"
+          class="slash-menu hidden"
+          role="listbox"
+          aria-label="Commands"
+          aria-hidden="true"
+        ></div>
         <div class="composer-box">
           <button type="button" id="btn-attach" class="btn-attach" title="Add image" aria-label="Add image">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
@@ -167,7 +174,7 @@
           <textarea
             id="prompt"
             rows="1"
-            placeholder="Type a message…"
+            placeholder="Type a message or / for commands…"
             autocomplete="off"
             spellcheck="true"
           ></textarea>

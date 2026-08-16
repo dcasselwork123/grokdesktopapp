@@ -19,6 +19,7 @@
     btnMic: $("#btn-mic"),
     voiceStrip: $("#voice-strip"),
     voiceStripText: $("#voice-strip-text"),
+    slashMenu: $("#slash-menu"),
     prompt: $("#prompt"),
     messages: $("#messages"),
     chatTitle: $("#chat-title"),
@@ -122,6 +123,7 @@
     pendingForkFrom: null,
     pendingSidechat: null,
     promptQueue: [], // follow-ups to send after the current turn (CLI Enter)
+    slashIndex: 0,
     // Projects start collapsed; only ids in this set are expanded
     expandedProjects: new Set(),
     selectMode: false,
@@ -2030,7 +2032,9 @@
     if (text) els.runningText.textContent = text;
     if (els.prompt) {
       els.prompt.disabled = false;
-      els.prompt.placeholder = on ? "Type a follow-up to queue…" : "Type a message…";
+      els.prompt.placeholder = on
+        ? "Type a follow-up to queue…"
+        : "Type a message or / for commands…";
     }
     if (els.btnAttach) els.btnAttach.disabled = false;
     updateSendEnabled();
@@ -2148,6 +2152,7 @@
     expandProjectForSession(id);
     clearAttachments();
     if (switchingAway) clearPromptQueue();
+    closeSlashMenu();
     document.body.classList.remove("sidebar-open");
     renderSessionList();
 
@@ -2218,6 +2223,7 @@
     if (cwd) setCwd(cwd);
     clearAttachments();
     clearPromptQueue();
+    closeSlashMenu();
     showEmptyState();
     renderSessionList();
     document.body.classList.remove("sidebar-open");
@@ -2354,7 +2360,256 @@
     return false;
   }
 
-  /** Local slash commands (TUI-style). Returns true if handled. */
+  const SLASH_COMMANDS = [
+    {
+      id: "new",
+      cmd: "/new",
+      aliases: ["/clear"],
+      label: "New chat",
+      hint: "Fresh draft in this folder",
+      action: "new",
+    },
+    {
+      id: "btw",
+      cmd: "/btw",
+      label: "Side chat",
+      hint: "Ask aside without interrupting",
+      action: "btw",
+    },
+    {
+      id: "imagine",
+      cmd: "/imagine",
+      label: "Imagine",
+      hint: "Generate an image from a description",
+      insert: "/imagine ",
+    },
+    {
+      id: "export",
+      cmd: "/export",
+      label: "Export chat",
+      hint: "Download this transcript as Markdown",
+      action: "export",
+    },
+    {
+      id: "help",
+      cmd: "/help",
+      label: "Help",
+      hint: "Show these commands",
+      action: "help",
+    },
+  ];
+
+  function slashQueryFromPrompt() {
+    if (!els.prompt) return null;
+    const raw = els.prompt.value;
+    if (!raw.startsWith("/")) return null;
+    if (/\s/.test(raw)) return null;
+    return raw.toLowerCase();
+  }
+
+  function matchingSlashCommands(query) {
+    const q = String(query || "/").toLowerCase();
+    return SLASH_COMMANDS.filter((item) => {
+      const names = [item.cmd, ...(item.aliases || [])];
+      return names.some((name) => name.startsWith(q));
+    });
+  }
+
+  function slashMenuIsOpen() {
+    return !!(els.slashMenu && !els.slashMenu.classList.contains("hidden"));
+  }
+
+  function closeSlashMenu() {
+    if (!els.slashMenu) return;
+    els.slashMenu.classList.add("hidden");
+    els.slashMenu.setAttribute("aria-hidden", "true");
+    els.slashMenu.replaceChildren();
+    state.slashIndex = 0;
+  }
+
+  function renderSlashMenu() {
+    if (!els.slashMenu) return;
+    const query = slashQueryFromPrompt();
+    if (query == null) {
+      closeSlashMenu();
+      return;
+    }
+    const matches = matchingSlashCommands(query);
+    els.slashMenu.replaceChildren();
+    if (!matches.length) {
+      const empty = document.createElement("div");
+      empty.className = "slash-menu-empty";
+      empty.textContent = "No matching command";
+      els.slashMenu.appendChild(empty);
+      els.slashMenu.classList.remove("hidden");
+      els.slashMenu.setAttribute("aria-hidden", "false");
+      state.slashIndex = 0;
+      return;
+    }
+    if (state.slashIndex >= matches.length) state.slashIndex = matches.length - 1;
+    if (state.slashIndex < 0) state.slashIndex = 0;
+    matches.forEach((item, i) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "slash-item" + (i === state.slashIndex ? " active" : "");
+      btn.setAttribute("role", "option");
+      btn.setAttribute("aria-selected", i === state.slashIndex ? "true" : "false");
+      btn.dataset.id = item.id;
+      btn.innerHTML =
+        `<span class="slash-item-cmd"></span>` +
+        `<span class="slash-item-body">` +
+        `<span class="slash-item-label"></span>` +
+        `<span class="slash-item-hint"></span>` +
+        `</span>`;
+      btn.querySelector(".slash-item-cmd").textContent = item.cmd;
+      btn.querySelector(".slash-item-label").textContent = item.label;
+      btn.querySelector(".slash-item-hint").textContent = item.hint;
+      btn.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+      });
+      btn.addEventListener("click", () => {
+        applySlashCommand(item);
+      });
+      els.slashMenu.appendChild(btn);
+    });
+    els.slashMenu.classList.remove("hidden");
+    els.slashMenu.setAttribute("aria-hidden", "false");
+    const active = els.slashMenu.querySelector(".slash-item.active");
+    if (active && typeof active.scrollIntoView === "function") {
+      active.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  function moveSlashHighlight(delta) {
+    if (!slashMenuIsOpen()) return;
+    const items = els.slashMenu.querySelectorAll(".slash-item");
+    if (!items.length) return;
+    state.slashIndex = (state.slashIndex + delta + items.length) % items.length;
+    items.forEach((el, i) => {
+      const on = i === state.slashIndex;
+      el.classList.toggle("active", on);
+      el.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    const active = items[state.slashIndex];
+    if (active && typeof active.scrollIntoView === "function") {
+      active.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  function highlightedSlashCommand() {
+    const query = slashQueryFromPrompt();
+    if (query == null) return null;
+    const matches = matchingSlashCommands(query);
+    if (!matches.length) return null;
+    return matches[Math.max(0, Math.min(state.slashIndex, matches.length - 1))] || null;
+  }
+
+  function applySlashSelection() {
+    const item = highlightedSlashCommand();
+    if (!item) return false;
+    applySlashCommand(item);
+    return true;
+  }
+
+  function applySlashCommand(item) {
+    if (!item) return;
+    closeSlashMenu();
+    if (item.insert) {
+      els.prompt.value = item.insert;
+      autoResizePrompt();
+      try {
+        els.prompt.focus();
+        const n = els.prompt.value.length;
+        els.prompt.setSelectionRange(n, n);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    if (item.action === "new") {
+      els.prompt.value = "";
+      autoResizePrompt();
+      clearAttachments();
+      startNewSession({ cwd: rememberedCwd() || undefined });
+      return;
+    }
+    if (item.action === "btw") {
+      els.prompt.value = "";
+      autoResizePrompt();
+      clearAttachments();
+      void openSidechat({ prompt: "" });
+      return;
+    }
+    if (item.action === "export") {
+      els.prompt.value = "";
+      autoResizePrompt();
+      void exportCurrentChat();
+      return;
+    }
+    if (item.action === "help") {
+      els.prompt.value = "/";
+      state.slashIndex = 0;
+      autoResizePrompt();
+      renderSlashMenu();
+      try {
+        els.prompt.focus();
+        els.prompt.setSelectionRange(1, 1);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  function exportFilename(title) {
+    const safe = String(title || "chat")
+      .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 60);
+    return `${safe || "chat"}.md`;
+  }
+
+  async function exportCurrentChat() {
+    const id = state.activeSessionId;
+    if (!id) {
+      showReconnectStatus("Nothing to export — open a chat first.", "warn");
+      return;
+    }
+    try {
+      const data = await api(`/api/sessions/${encodeURIComponent(id)}`);
+      const title = (data.session && data.session.title) || "Chat";
+      const cwd = data.session && data.session.cwd;
+      const lines = [`# ${title}`];
+      if (cwd) lines.push(`Folder: \`${cwd}\``);
+      lines.push("");
+      const msgs = Array.isArray(data.messages) ? data.messages : [];
+      if (!msgs.length) {
+        showReconnectStatus("This chat is empty — nothing to export.", "warn");
+        return;
+      }
+      for (const m of msgs) {
+        const role = m.role === "user" ? "You" : "Grok";
+        lines.push(`## ${role}`, "", String(m.text || "").trim() || "_(empty)_", "");
+      }
+      const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = exportFilename(title);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      showReconnectStatus("Saved transcript as Markdown.", "ok");
+    } catch (err) {
+      showReconnectStatus(networkErrorMessage(err), "warn");
+    }
+  }
+
+  /**
+   * Local slash commands (TUI-style).
+   * Returns true if fully handled, { rewrite } to send different text, or false.
+   */
   function handleSlashCommand(text) {
     const raw = text.trim();
     if (!raw.startsWith("/")) return false;
@@ -2363,6 +2618,7 @@
       els.prompt.value = "";
       autoResizePrompt();
       clearAttachments();
+      closeSlashMenu();
       startNewSession({ cwd: rememberedCwd() || undefined });
       return true;
     }
@@ -2371,8 +2627,34 @@
       els.prompt.value = "";
       autoResizePrompt();
       clearAttachments();
+      closeSlashMenu();
       void openSidechat({ prompt: rest });
       return true;
+    }
+    if (cmd === "/help") {
+      els.prompt.value = "/";
+      state.slashIndex = 0;
+      autoResizePrompt();
+      renderSlashMenu();
+      return true;
+    }
+    if (cmd === "/export") {
+      els.prompt.value = "";
+      autoResizePrompt();
+      closeSlashMenu();
+      void exportCurrentChat();
+      return true;
+    }
+    if (cmd === "/imagine") {
+      const rest = raw.slice(cmd.length).trim();
+      if (!rest) {
+        els.prompt.value = "/imagine ";
+        autoResizePrompt();
+        closeSlashMenu();
+        return true;
+      }
+      closeSlashMenu();
+      return { rewrite: `Generate an image: ${rest}` };
     }
     return false;
   }
@@ -2417,7 +2699,11 @@
     }
     if (!text && !pendingImages.length) return;
 
-    if (!queued && text && handleSlashCommand(text)) return;
+    if (!queued && text) {
+      const slash = handleSlashCommand(text);
+      if (slash === true) return;
+      if (slash && slash.rewrite) text = slash.rewrite;
+    }
 
     // CLI: plain Enter mid-turn queues; Ctrl+Enter is cancel-and-send.
     if (!queued && (state.running || state.abortController) && !sendNow) {
@@ -2455,6 +2741,7 @@
     els.prompt.value = "";
     clearAttachments();
     autoResizePrompt();
+    closeSlashMenu();
     els.btnSend.disabled = true;
 
     const shell = appendAssistantShell();
@@ -3635,7 +3922,7 @@
       els.prompt.placeholder =
         phase === "recording" ? "Listening…" : "Transcribing…";
     } else if (els.prompt && !state.running) {
-      els.prompt.placeholder = "Type a message…";
+      els.prompt.placeholder = "Type a message or / for commands…";
     }
   }
 
@@ -4282,7 +4569,10 @@
     updateSendEnabled();
   }
 
-  els.prompt.addEventListener("input", autoResizePrompt);
+  els.prompt.addEventListener("input", () => {
+    autoResizePrompt();
+    renderSlashMenu();
+  });
 
   function promptHasOwnSelection() {
     const el = els.prompt;
@@ -4388,7 +4678,7 @@
       e.target &&
       e.target.closest &&
       e.target.closest(
-        "#sidebar, .modal, .context-menu, #setup-gate, #folder-picker-backdrop, #account-popover"
+        "#sidebar, .modal, .context-menu, #setup-gate, #folder-picker-backdrop, #account-popover, #slash-menu"
       )
     ) {
       return;
@@ -4405,12 +4695,31 @@
       void stopVoice({ transcribe: false });
       return;
     }
+    if (e.key === "Escape" && slashMenuIsOpen()) {
+      e.preventDefault();
+      closeSlashMenu();
+      return;
+    }
     if (e.key === "Escape" && state.running) {
       e.preventDefault();
       void stopRun();
       return;
     }
+    if (slashMenuIsOpen() && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      moveSlashHighlight(e.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if (slashMenuIsOpen() && e.key === "Tab") {
+      e.preventDefault();
+      applySlashSelection();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
+      if (slashMenuIsOpen() && applySlashSelection()) {
+        e.preventDefault();
+        return;
+      }
       e.preventDefault();
       if ((e.ctrlKey || e.metaKey) && state.running) {
         sendPrompt({ sendNow: true });
@@ -4494,6 +4803,12 @@
     if (!els.usagePopover || els.usagePopover.classList.contains("hidden")) return;
     const wrap = e.target.closest && e.target.closest(".usage-wrap");
     if (!wrap) setUsagePopoverOpen(false);
+  });
+  document.addEventListener("click", (e) => {
+    if (!slashMenuIsOpen()) return;
+    const inMenu = e.target.closest && e.target.closest("#slash-menu");
+    const inPrompt = els.prompt && (e.target === els.prompt || els.prompt.contains(e.target));
+    if (!inMenu && !inPrompt) closeSlashMenu();
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") setUsagePopoverOpen(false);

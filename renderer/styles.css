@@ -1510,6 +1510,79 @@ body.select-mode .session-item .check {
   background: var(--danger);
 }
 
+.slash-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 2px 8px;
+  padding: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+  max-height: min(280px, 42vh);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.slash-menu.hidden {
+  display: none;
+}
+
+.slash-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.slash-item:hover,
+.slash-item.active {
+  background: var(--bg-hover);
+}
+
+.slash-item-cmd {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.slash-item-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.slash-item-label {
+  font-weight: 550;
+  line-height: 1.25;
+}
+
+.slash-item-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.3;
+}
+
+.slash-menu-empty {
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 .composer-box {
   display: flex;
   align-items: flex-end;
@@ -2598,6 +2671,16 @@ body.select-mode .session-item .check {
     border-radius: 20px;
     padding: 8px 8px 8px 14px;
     min-width: 0;
+  }
+
+  .slash-menu {
+    margin: 0 0 8px;
+    max-height: min(240px, 36vh);
+  }
+
+  .slash-item {
+    padding: 10px 12px;
+    font-size: 14px;
   }
 
   #prompt {
