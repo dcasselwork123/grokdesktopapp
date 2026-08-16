@@ -64,7 +64,7 @@ Then open http://127.0.0.1:3847. The setup gate is the same.
 | **`/export`** | Download the open chat as Markdown |
 | **`/clear`** | Wipe this chat’s context; stay in the same session |
 | **`/new`** | Fresh draft in the same folder |
-| **Images** | **+**, paste, or drag-and-drop (max 8). Re-encoded to JPEG on the client |
+| **Images** | **+**, paste, or drag-and-drop (max 8). Re-encoded to JPEG on the client. Pictures Grok generates (`/imagine`) show in the chat |
 | **Voice** | Mic next to Send; [Grok Speech-to-Text](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text) fills the box **as you speak**. On the phone, use the **HTTPS** Tailscale URL (`https://….ts.net` — free Let’s Encrypt). Plain `http://100.x` cannot open the live mic; the button then asks for a Voice Memo / file |
 | **Model / Effort** | Composer selectors, including a custom model picker |
 | **Usage** | Weekly usage pie in the composer; click for session context |

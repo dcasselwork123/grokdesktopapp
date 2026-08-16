@@ -21,7 +21,14 @@ const {
   renameSession,
   clearSession,
   getUsageSnapshot,
+  findSessionPath,
 } = require("./grokService");
+const {
+  listSessionMedia,
+  resolveSessionMediaFile,
+  mediaTypeForRel,
+  normalizeRelMedia,
+} = require("./sessionMedia");
 const { transcribeAudio, createLiveTranscriber, decodePcmPayload } = require("./speechToText");
 const {
   buildRemoteInfo,
@@ -61,6 +68,12 @@ const MIME = {
   ".js": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".webmanifest": "application/manifest+json",
@@ -1019,6 +1032,39 @@ async function createServer({
             extraHeaders
           );
         }
+        return;
+      }
+
+      if (pathname.startsWith("/api/sessions/") && pathname.includes("/media") && req.method === "GET") {
+        const rest = pathname.slice("/api/sessions/".length);
+        const mediaAt = rest.indexOf("/media");
+        const id = mediaAt >= 0 ? decodeURIComponent(rest.slice(0, mediaAt)) : "";
+        const afterMedia = mediaAt >= 0 ? rest.slice(mediaAt + "/media".length) : "";
+        if (isRejectedSessionId(id)) {
+          sendJson(res, 400, { error: "Invalid session id" }, extraHeaders);
+          return;
+        }
+        const sessionPath = findSessionPath(id);
+        if (!sessionPath) {
+          sendJson(res, 404, { error: "Session not found" }, extraHeaders);
+          return;
+        }
+        if (!afterMedia || afterMedia === "/") {
+          sendJson(res, 200, { files: listSessionMedia(sessionPath) }, extraHeaders);
+          return;
+        }
+        const rel = normalizeRelMedia(decodeURIComponent(afterMedia.replace(/^\/+/, "")));
+        const filePath = rel ? resolveSessionMediaFile(sessionPath, rel) : null;
+        if (!filePath) {
+          sendJson(res, 404, { error: "Media not found" }, extraHeaders);
+          return;
+        }
+        res.writeHead(200, {
+          "Content-Type": mediaTypeForRel(rel),
+          "Cache-Control": "private, max-age=3600",
+          ...extraHeaders,
+        });
+        fs.createReadStream(filePath).pipe(res);
         return;
       }
 

@@ -79,6 +79,7 @@ Persist as `permissionMode` in `~/.grok-desktop/config.json`. Do not take a perm
 - Server saves under `~/.grok-desktop/uploads/`, then runs Grok with a normal `-p` prompt that includes absolute image paths so the model can use **`read_file` vision** (do **not** rely on `--prompt-json` for large images on Windows/Electron — it was unreliable).
 - Status bar updates during image turns (launching → running → tool/thinking → writing). Client heartbeat + 45s no-output watchdog if Grok stalls.
 - Optional debug log: `~/.grok-desktop/debug.log`.
+- **Generated images / video:** `image_gen`, `image_edit`, `image_to_video`, and `reference_to_video` save under the session folder (`images/1.jpg`, `videos/1.mp4`). The chat shows those files inline. Serve only via `GET /api/sessions/:id/media/…` (session-relative `images/` / `videos/` only).
 
 ### Voice dictation
 

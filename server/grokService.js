@@ -14,6 +14,7 @@ const {
   clearSessionDir,
   takeClearedSessionStub,
 } = require("./sessionTranscript");
+const { attachMediaToMessages } = require("./sessionMedia");
 const { isSafeSessionId, resolveUnderSessionsRoot } = require("./sessionId");
 
 function getGrokHome() {
@@ -514,6 +515,7 @@ function loadSessionMessages(sessionId) {
   }
   const session = synthesizeSessionMeta(sessionPath);
   const { messages } = loadTranscript(sessionPath);
+  attachMediaToMessages(sessionPath, messages);
   return { session, messages };
 }
 

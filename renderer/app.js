@@ -1506,6 +1506,16 @@
     html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
 
+    // generated session media: ![alt](images/1.jpg) and bare images/1.jpg
+    html = html.replace(
+      /!\[([^\]]*)\]\(((?:images|videos)\/[A-Za-z0-9._-]+\.(?:jpe?g|png|webp|gif|mp4|webm))\)/gi,
+      (_, alt, rel) => renderMediaHtml(rel, alt)
+    );
+    html = html.replace(
+      /(?<!["/=])\b((?:images|videos)\/[A-Za-z0-9._-]+\.(?:jpe?g|png|webp|gif|mp4|webm))\b/gi,
+      (rel) => renderMediaHtml(rel)
+    );
+
     // headers
     html = html.replace(/^### (.+)$/gm, '<div class="md-h">$1</div>');
     html = html.replace(/^## (.+)$/gm, '<div class="md-h">$1</div>');
@@ -1529,6 +1539,16 @@
       .join("");
 
     return html;
+  }
+
+  function renderMediaHtml(rel, alt) {
+    const url = sessionMediaUrl(rel);
+    if (!url) return escapeHtml(rel);
+    const label = escapeHtml(alt || rel);
+    if (/\.(mp4|webm)$/i.test(rel)) {
+      return `<video class="generated-media-item" src="${escapeHtml(url)}" controls playsinline></video>`;
+    }
+    return `<img class="generated-media-item" src="${escapeHtml(url)}" alt="${label}">`;
   }
 
   function appendUserMessage(text, imageDataUrls = []) {
@@ -1756,9 +1776,93 @@
     open_page: "Open page",
     image_gen: "Image",
     image_edit: "Image edit",
+    image_to_video: "Video",
+    reference_to_video: "Video",
     spawn_subagent: "Subagent",
     todo_write: "Todos",
   };
+
+  const MEDIA_TOOL_NAMES = new Set([
+    "image_gen",
+    "image_edit",
+    "image_to_video",
+    "reference_to_video",
+  ]);
+  const REL_MEDIA_RE =
+    /\b((?:images|videos)[/\\][A-Za-z0-9][A-Za-z0-9._-]*\.(?:jpe?g|png|webp|gif|mp4|webm))\b/gi;
+
+  function isMediaToolName(name) {
+    return MEDIA_TOOL_NAMES.has(
+      String(name || "")
+        .trim()
+        .toLowerCase()
+    );
+  }
+
+  function normalizeRelMedia(p) {
+    if (!p || typeof p !== "string") return null;
+    const rel = p
+      .trim()
+      .replace(/\\/g, "/")
+      .replace(/\/+/g, "/")
+      .replace(/^\/+/, "");
+    if (
+      !/^(images|videos)\/[A-Za-z0-9][A-Za-z0-9._-]*\.(jpe?g|png|webp|gif|mp4|webm)$/i.test(
+        rel
+      )
+    ) {
+      return null;
+    }
+    return rel;
+  }
+
+  function extractRelMedia(value, out, seen, depth) {
+    if (value == null || depth > 8) return;
+    if (typeof value === "string") {
+      REL_MEDIA_RE.lastIndex = 0;
+      let m;
+      while ((m = REL_MEDIA_RE.exec(value))) {
+        const rel = normalizeRelMedia(m[1]);
+        if (!rel) continue;
+        const key = rel.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(rel);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) extractRelMedia(item, out, seen, depth + 1);
+      return;
+    }
+    if (typeof value === "object") {
+      for (const item of Object.values(value)) extractRelMedia(item, out, seen, depth + 1);
+    }
+  }
+
+  function mediaPathsFrom(src) {
+    const out = [];
+    const seen = new Set();
+    if (src && Array.isArray(src.media)) {
+      for (const p of src.media) {
+        const rel = normalizeRelMedia(p);
+        if (!rel) continue;
+        const key = rel.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(rel);
+      }
+    }
+    extractRelMedia(src, out, seen, 0);
+    return out;
+  }
+
+  function sessionMediaUrl(rel) {
+    const sid = state.activeSessionId || state.streamSessionId;
+    const norm = normalizeRelMedia(rel);
+    if (!sid || !norm) return "";
+    return apiUrl(`/api/sessions/${encodeURIComponent(sid)}/media/${norm}`);
+  }
 
   function looksLikeCallId(s) {
     return /^call[-_]/i.test(String(s || "").trim());
@@ -1911,12 +2015,15 @@
         <div class="thought-body"></div>
       </div>
       <div class="tools"></div>
+      <div class="generated-media hidden"></div>
       <div class="body"></div>`;
     els.messages.appendChild(wrap);
     scrollToBottom();
     const shell = {
       el: wrap,
       toolsEl: wrap.querySelector(".tools"),
+      mediaEl: wrap.querySelector(".generated-media"),
+      mediaShown: new Set(),
       bodyEl: wrap.querySelector(".body"),
       thoughtWrap: wrap.querySelector(".thought-block"),
       thoughtToggle: wrap.querySelector(".thought-toggle"),
@@ -2016,7 +2123,75 @@
       chip.classList.remove("running", "done", "failed", "cancelled");
       chip.classList.add(info.status);
     }
+    const media = mediaPathsFrom(src);
+    if (media.length) showGeneratedMedia(shell, media);
+    else if (info.status === "done" && isMediaToolName(info.rawName || info.kind)) {
+      void refreshSessionMedia(shell);
+    }
     scrollToBottom();
+  }
+
+  function showGeneratedMedia(shell, relPaths) {
+    if (!shell || !shouldRenderShell(shell)) return;
+    if (!shell.mediaEl) {
+      const el = document.createElement("div");
+      el.className = "generated-media";
+      const body = shell.bodyEl;
+      if (body && body.parentNode) body.parentNode.insertBefore(el, body);
+      else if (shell.el) shell.el.appendChild(el);
+      shell.mediaEl = el;
+    }
+    if (!shell.mediaShown) shell.mediaShown = new Set();
+    let added = false;
+    for (const raw of relPaths || []) {
+      const rel = normalizeRelMedia(raw);
+      if (!rel) continue;
+      const key = rel.toLowerCase();
+      if (shell.mediaShown.has(key)) continue;
+      shell.mediaShown.add(key);
+      if (/\.(mp4|webm)$/i.test(rel)) {
+        const video = document.createElement("video");
+        video.className = "generated-media-item";
+        video.dataset.mediaRel = rel;
+        video.src = sessionMediaUrl(rel);
+        video.controls = true;
+        video.setAttribute("playsinline", "");
+        shell.mediaEl.appendChild(video);
+      } else {
+        const img = document.createElement("img");
+        img.className = "generated-media-item";
+        img.dataset.mediaRel = rel;
+        img.src = sessionMediaUrl(rel);
+        img.alt = rel;
+        shell.mediaEl.appendChild(img);
+      }
+      added = true;
+    }
+    if (added) {
+      shell.mediaEl.classList.remove("hidden");
+      scrollToBottom();
+    }
+  }
+
+  async function refreshSessionMedia(shell) {
+    const sid = (shell && shell.sessionId) || state.activeSessionId || state.streamSessionId;
+    if (!sid) return;
+    try {
+      const data = await api(`/api/sessions/${encodeURIComponent(sid)}/media`);
+      const files = Array.isArray(data && data.files) ? data.files : [];
+      if (!files.length) return;
+      const seen = new Set();
+      if (els.messages) {
+        els.messages.querySelectorAll("[data-media-rel]").forEach((el) => {
+          const rel = el.getAttribute("data-media-rel");
+          if (rel) seen.add(rel.toLowerCase());
+        });
+      }
+      const fresh = files.filter((rel) => !seen.has(String(rel).toLowerCase()));
+      if (fresh.length) showGeneratedMedia(shell || state.liveShell, fresh);
+    } catch {
+      /* media may not exist yet */
+    }
   }
 
   function scrollToBottom() {
@@ -2173,6 +2348,7 @@
                 upsertTool(shell, t);
               }
             }
+            if (m.media?.length) showGeneratedMedia(shell, m.media);
             if (m.text) {
               shell.text = m.text;
               shell.bodyEl.innerHTML = renderMarkdown(m.text);
@@ -3083,6 +3259,8 @@
         const shell = {
           el: last,
           toolsEl: last.querySelector(".tools"),
+          mediaEl: last.querySelector(".generated-media"),
+          mediaShown: new Set(),
           bodyEl,
           text: "",
           thought: "",
@@ -3104,6 +3282,8 @@
     if (!shell || !fresh) return;
     shell.el = fresh.el;
     shell.toolsEl = fresh.toolsEl;
+    shell.mediaEl = fresh.mediaEl || shell.mediaEl;
+    if (!shell.mediaShown) shell.mediaShown = new Set();
     shell.bodyEl = fresh.bodyEl;
     shell.thoughtWrap = fresh.thoughtWrap;
     shell.thoughtToggle = fresh.thoughtToggle;
@@ -3874,12 +4054,20 @@
             ? `${label || "Tool"} done`
             : label || "Using tools…";
       }
+      if (isMediaToolName((evt && (evt.toolName || evt.name)) || describeTool(evt).rawName)) {
+        const media = mediaPathsFrom(evt);
+        if (media.length) showGeneratedMedia(shell, media);
+        else if (String(evt.status || "").toLowerCase() === "completed" || formatToolStatus(evt.status) === "done") {
+          void refreshSessionMedia(shell);
+        }
+      }
     } else if (type === "error") {
       updateAssistantText(shell, `\n⚠️ ${evt.message || "error"}\n`);
       flushAssistantMarkdown(shell);
     } else if (type === "end") {
       const reason = String(evt.stopReason || evt.stop_reason || "").toLowerCase();
       if (viewing) els.runningText.textContent = "Finishing…";
+      if (shell && shell.toolUsed) void refreshSessionMedia(shell);
       if (reason === "cancelled" || reason === "max_tokens") {
         const note =
           reason === "cancelled"

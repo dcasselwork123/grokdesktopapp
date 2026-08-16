@@ -341,6 +341,38 @@ test("synthesizeSessionMeta for summary-less dir uses first user line and mtime"
   }
 });
 
+test("image_gen tool updates keep session-relative media paths", () => {
+  const text = [
+    wrapUpdate("user_message_chunk", { content: { type: "text", text: "draw a fox" } }, 1),
+    wrapUpdate(
+      "tool_call",
+      {
+        toolCallId: "call-img",
+        title: "image_gen",
+        _meta: { "x.ai/tool": { name: "image_gen" } },
+      },
+      2
+    ),
+    wrapUpdate(
+      "tool_call_update",
+      {
+        toolCallId: "call-img",
+        status: "completed",
+        content: [
+          {
+            type: "content",
+            content: { type: "text", text: "Saved to C:\\Users\\me\\.grok\\sessions\\p\\id\\images\\1.jpg" },
+          },
+        ],
+      },
+      3
+    ),
+  ].join("\n");
+  const msgs = parseUpdatesJsonl(text);
+  assert.strictEqual(msgs[1].tools[0].name, "image_gen");
+  assert.ok(msgs[1].tools[0].media.includes("images/1.jpg"));
+});
+
 test("clearSessionDir wipes transcript files and marks a stub", () => {
   const dir = tmpDir();
   const sessionPath = path.join(dir, "019bbbbb-cccc-4ddd-8eee-ffffffffffff");

@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { extractMediaPaths } = require("./sessionMedia");
 
 const LARGE_FILE_BYTES = 20 * 1024 * 1024;
 const PEEK_BYTES = 64 * 1024;
@@ -422,6 +423,7 @@ function createUpdatesAccumulator() {
         title: update.title || name,
         status: update.status || "pending",
         name,
+        media: extractMediaPaths(update),
       };
       tools.set(id, entry);
       currentAssistant.tools.push(entry);
@@ -431,6 +433,16 @@ function createUpdatesAccumulator() {
       if (entry) {
         if (update.title) entry.title = update.title;
         if (update.status) entry.status = update.status;
+        const more = extractMediaPaths(update);
+        if (more.length) {
+          const seen = new Set((entry.media || []).map((p) => String(p).toLowerCase()));
+          entry.media = [...(entry.media || [])];
+          for (const p of more) {
+            if (seen.has(p.toLowerCase())) continue;
+            seen.add(p.toLowerCase());
+            entry.media.push(p);
+          }
+        }
       }
     }
   }
@@ -482,6 +494,7 @@ function normalizeToolCall(raw) {
     title: raw.title || name,
     status: raw.status || "pending",
     name,
+    media: extractMediaPaths(raw),
   };
 }
 
