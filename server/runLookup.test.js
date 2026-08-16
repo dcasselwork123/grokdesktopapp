@@ -1,7 +1,7 @@
 "use strict";
 
 const assert = require("assert");
-const { findRunBySessionId, findRunByClientTurnId } = require("./httpApi");
+const { findRunBySessionId, findRunByClientTurnId, serializeRun } = require("./httpApi");
 
 let failed = 0;
 
@@ -23,6 +23,7 @@ function run(partial) {
     clientTurnId: partial.clientTurnId || null,
     startedAt: partial.startedAt || 0,
     done: partial.done || null,
+    asks: partial.asks,
   };
 }
 
@@ -74,6 +75,29 @@ test("findRunByClientTurnId can ignore finished turns", () => {
   ]);
   assert.strictEqual(findRunByClientTurnId(runs, "ct-1", { includeDone: false }), null);
   assert.strictEqual(findRunByClientTurnId(runs, "ct-1", { includeDone: true }).runId, "r1");
+});
+
+test("serializeRun includes pending ask_user_question cards", () => {
+  const record = run({
+    runId: "r-ask",
+    sessionId: "s-ask",
+    startedAt: 2,
+    asks: [
+      {
+        id: "call-ask",
+        questions: [{ question: "Tone?", options: [{ label: "Minimal" }], multiSelect: false }],
+      },
+      {
+        id: "call-done",
+        questions: [{ question: "Done?", options: [{ label: "Yes" }], multiSelect: false }],
+        answers: [{ question: "Done?", answer: "Yes" }],
+      },
+    ],
+  });
+  const json = serializeRun(record);
+  assert.strictEqual(json.pendingQuestions.length, 1);
+  assert.strictEqual(json.pendingQuestions[0].id, "call-ask");
+  assert.strictEqual(json.pendingQuestions[0].questions[0].question, "Tone?");
 });
 
 if (failed) {

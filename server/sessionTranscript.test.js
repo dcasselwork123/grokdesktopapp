@@ -341,6 +341,108 @@ test("synthesizeSessionMeta for summary-less dir uses first user line and mtime"
   }
 });
 
+test("ask_user_question tool keeps questions and recorded answers", () => {
+  const text = [
+    wrapUpdate("user_message_chunk", { content: { type: "text", text: "design a landing page" } }, 1),
+    wrapUpdate(
+      "tool_call",
+      {
+        toolCallId: "call-ask",
+        title: "ask_user_question",
+        rawInput: {
+          questions: [
+            {
+              question: "Minimal or bold?",
+              options: [
+                { label: "Minimal (Recommended)", description: "Clean" },
+                { label: "Bold & expressive", description: "More color" },
+              ],
+            },
+          ],
+        },
+        _meta: { "x.ai/tool": { name: "ask_user_question" } },
+      },
+      2
+    ),
+    wrapUpdate(
+      "tool_call_update",
+      { toolCallId: "call-ask", status: "completed" },
+      3
+    ),
+    wrapUpdate("turn_completed", {}, 4),
+    wrapUpdate(
+      "user_message_chunk",
+      {
+        content: {
+          type: "text",
+          text:
+            "<user_answers>\nQuestion: Minimal or bold?\nAnswer: Bold & expressive\n</user_answers>",
+        },
+      },
+      5
+    ),
+    wrapUpdate("agent_message_chunk", { content: { type: "text", text: "Going bold." } }, 6),
+  ].join("\n");
+  const msgs = parseUpdatesJsonl(text);
+  assert.strictEqual(msgs.length, 3);
+  assert.strictEqual(msgs[0].role, "user");
+  assert.strictEqual(msgs[0].text, "design a landing page");
+  assert.strictEqual(msgs[1].role, "assistant");
+  assert.strictEqual(msgs[1].tools.length, 1);
+  assert.strictEqual(msgs[1].tools[0].name, "ask_user_question");
+  assert.strictEqual(msgs[1].tools[0].questions[0].question, "Minimal or bold?");
+  assert.ok(msgs[1].tools[0].questions[0].options.some((o) => o.isOther));
+  assert.strictEqual(msgs[1].tools[0].answers[0].answer, "Bold & expressive");
+  assert.strictEqual(msgs[2].text, "Going bold.");
+  assert.ok(!msgs.some((m) => /<user_answers>/.test(m.text || "")));
+});
+
+test("chat_history ask_user_question keeps questions and hides the answer block", () => {
+  const text = [
+    JSON.stringify({
+      type: "user",
+      content: [{ type: "text", text: "<user_query>pick a stack</user_query>" }],
+    }),
+    JSON.stringify({
+      type: "assistant",
+      content: "A couple of choices.",
+      tool_calls: [
+        {
+          id: "call-ask",
+          name: "ask_user_question",
+          rawInput: {
+            questions: [
+              {
+                question: "Framework?",
+                options: [{ label: "React" }, { label: "SvelteKit" }],
+              },
+            ],
+          },
+        },
+      ],
+    }),
+    JSON.stringify({
+      type: "user",
+      content: [
+        {
+          type: "text",
+          text: "<user_query>\n<user_answers>\nQuestion: Framework?\nAnswer: SvelteKit\n</user_answers>\n</user_query>",
+        },
+      ],
+    }),
+    JSON.stringify({ type: "assistant", content: "SvelteKit it is." }),
+  ].join("\n");
+  const msgs = parseChatHistoryJsonl(text);
+  assert.strictEqual(msgs.length, 2);
+  assert.strictEqual(msgs[0].text, "pick a stack");
+  assert.strictEqual(msgs[1].tools[0].name, "ask_user_question");
+  assert.strictEqual(msgs[1].tools[0].questions[0].question, "Framework?");
+  assert.strictEqual(msgs[1].tools[0].answers[0].answer, "SvelteKit");
+  assert.ok(msgs[1].text.includes("A couple of choices."));
+  assert.ok(msgs[1].text.includes("SvelteKit it is."));
+  assert.ok(!msgs.some((m) => /<user_answers>/.test(m.text || "")));
+});
+
 test("image_gen tool updates keep session-relative media paths", () => {
   const text = [
     wrapUpdate("user_message_chunk", { content: { type: "text", text: "draw a fox" } }, 1),

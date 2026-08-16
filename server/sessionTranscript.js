@@ -3,6 +3,13 @@
 const fs = require("fs");
 const path = require("path");
 const { extractMediaPaths } = require("./sessionMedia");
+const {
+  extractAskUserQuestions,
+  parseUserAnswersBlock,
+  isAnswersOnlyUserText,
+  applyAnswersToAsk,
+  isAskUserQuestionName,
+} = require("./sessionQuestions");
 
 const LARGE_FILE_BYTES = 20 * 1024 * 1024;
 const PEEK_BYTES = 64 * 1024;
@@ -350,6 +357,36 @@ function toolNameFromUpdate(update) {
   );
 }
 
+function attachAskToTool(entry, src) {
+  if (!entry || !src) return entry;
+  const ask = extractAskUserQuestions(src);
+  if (!ask) return entry;
+  if (ask.questions && ask.questions.length) entry.questions = ask.questions;
+  if (isAskUserQuestionName(ask.name) || (ask.questions && ask.questions.length)) {
+    entry.name = "ask_user_question";
+  }
+  if (src.answers && Array.isArray(src.answers) && src.answers.length && !entry.answers) {
+    applyAnswersToAsk(entry, src.answers);
+  }
+  return entry;
+}
+
+function applyAnswersToOpenAsk(messages, currentAssistant, pairs) {
+  if (!pairs || !pairs.length) return;
+  const tools = [];
+  if (currentAssistant && Array.isArray(currentAssistant.tools)) {
+    tools.push(...currentAssistant.tools);
+  }
+  for (let i = (messages || []).length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg && Array.isArray(msg.tools)) tools.push(...msg.tools);
+  }
+  const ask =
+    tools.find((t) => t && t.questions && t.questions.length && !t.answers) ||
+    tools.find((t) => t && isAskUserQuestionName(t.name) && !t.answers);
+  if (ask) applyAnswersToAsk(ask, pairs);
+}
+
 function createUpdatesAccumulator() {
   const messages = [];
   let currentUser = null;
@@ -358,11 +395,16 @@ function createUpdatesAccumulator() {
 
   function flushUser() {
     if (currentUser && currentUser.text.trim()) {
-      messages.push({
-        role: "user",
-        text: currentUser.text.trim(),
-        ts: currentUser.ts,
-      });
+      const text = currentUser.text.trim();
+      const answers = parseUserAnswersBlock(text);
+      if (answers) applyAnswersToOpenAsk(messages, currentAssistant, answers);
+      if (!(answers && isAnswersOnlyUserText(text))) {
+        messages.push({
+          role: "user",
+          text,
+          ts: currentUser.ts,
+        });
+      }
     }
     currentUser = null;
   }
@@ -425,14 +467,33 @@ function createUpdatesAccumulator() {
         name,
         media: extractMediaPaths(update),
       };
+      attachAskToTool(entry, update);
       tools.set(id, entry);
       currentAssistant.tools.push(entry);
     } else if (kind === "tool_call_update") {
       const id = update.toolCallId;
-      const entry = tools.get(id);
+      let entry = tools.get(id);
+      if (!entry) {
+        const ask = extractAskUserQuestions(update);
+        if (ask && (ask.questions.length || isAskUserQuestionName(ask.name))) {
+          flushUser();
+          ensureAssistant(ts);
+          entry = {
+            id,
+            title: update.title || ask.name || "ask_user_question",
+            status: update.status || "pending",
+            name: ask.name || "ask_user_question",
+            media: extractMediaPaths(update),
+          };
+          attachAskToTool(entry, update);
+          tools.set(id, entry);
+          currentAssistant.tools.push(entry);
+        }
+      }
       if (entry) {
         if (update.title) entry.title = update.title;
         if (update.status) entry.status = update.status;
+        attachAskToTool(entry, update);
         const more = extractMediaPaths(update);
         if (more.length) {
           const seen = new Set((entry.media || []).map((p) => String(p).toLowerCase()));
@@ -489,13 +550,15 @@ function normalizeToolCall(raw) {
     (raw.function && raw.function.name) ||
     raw.title ||
     "tool";
-  return {
+  const entry = {
     id: raw.id || raw.tool_call_id || null,
     title: raw.title || name,
     status: raw.status || "pending",
     name,
     media: extractMediaPaths(raw),
   };
+  attachAskToTool(entry, raw);
+  return entry;
 }
 
 function createChatHistoryAccumulator() {
@@ -534,6 +597,11 @@ function createChatHistoryAccumulator() {
       if (isIgnorableUser(evt, raw)) return;
       const text = extractUserFacingText(raw);
       if (!text) return;
+      const answers = parseUserAnswersBlock(raw) || parseUserAnswersBlock(text);
+      if (answers) applyAnswersToOpenAsk(messages, currentAssistant, answers);
+      if (answers && isAnswersOnlyUserText(raw)) {
+        return;
+      }
       flushAssistant();
       messages.push({ role: "user", text, ts });
       return;

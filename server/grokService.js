@@ -16,6 +16,7 @@ const {
 } = require("./sessionTranscript");
 const { attachMediaToMessages } = require("./sessionMedia");
 const { isSafeSessionId, resolveUnderSessionsRoot } = require("./sessionId");
+const { extractAskUserQuestions } = require("./sessionQuestions");
 
 function getGrokHome() {
   return process.env.GROK_HOME || path.join(os.homedir(), ".grok");
@@ -1254,8 +1255,17 @@ function runPrompt({
               `detected self-kill pattern in live tool event session=${resolvedSessionId}`
             );
           }
+          const ask = extractAskUserQuestions(evt);
+          if (ask) {
+            debugLog(
+              `ask_user_question id=${ask.id || "?"} questions=${ask.questions.length} ` +
+                `status=${evt.status || evt.title || ""} session=${resolvedSessionId || ""}`
+            );
+          }
           emitBuffered("status", {
-            message: evt.title || evt.toolName || "Using tools…",
+            message: ask
+              ? "Waiting for your choice…"
+              : evt.title || evt.toolName || "Using tools…",
           });
         } else if (evt.type === "text") {
           emitBuffered("status", { message: "Writing…" });

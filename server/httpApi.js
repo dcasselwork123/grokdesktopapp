@@ -61,6 +61,12 @@ const {
   listKnownProjectFolders,
   createChatRateLimiter,
 } = require("./chatPolicy");
+const {
+  rememberAskOnRun,
+  pendingAsksOf,
+  parseUserAnswersBlock,
+  markAskAnsweredOnRun,
+} = require("./sessionQuestions");
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -358,7 +364,10 @@ function registerRun(activeRuns, { runId, sessionId, emitter, clientTurnId }) {
   activeRuns.set(runId, record);
   startRunKeepAlive(record);
   emitter.on("status", (data) => broadcast(record, "status", data));
-  emitter.on("event", (evt) => broadcast(record, "grok", evt));
+  emitter.on("event", (evt) => {
+    rememberAskOnRun(record, evt);
+    broadcast(record, "grok", evt);
+  });
   emitter.on("sessionId", (id) => {
     record.sessionId = id;
     broadcast(record, "session", { sessionId: id });
@@ -418,12 +427,14 @@ function findActiveRunBySessionId(activeRuns, sessionId) {
 
 function serializeRun(record) {
   if (!record) return null;
+  const pending = pendingAsksOf(record);
   return {
     runId: record.runId,
     sessionId: record.sessionId,
     startedAt: record.startedAt,
     done: !!record.done,
     clientTurnId: record.clientTurnId || null,
+    pendingQuestions: pending.length ? pending : [],
   };
 }
 
@@ -1534,6 +1545,15 @@ async function createServer({
         const clientTurnId =
           typeof body.clientTurnId === "string" ? body.clientTurnId.trim().slice(0, 80) : "";
 
+        const answerPairs = parseUserAnswersBlock(prompt);
+        if (answerPairs && sessionId && !newSession) {
+          const liveAsk = findActiveRunBySessionId(activeRuns, sessionId);
+          if (liveAsk && Array.isArray(liveAsk.asks) && liveAsk.asks.length) {
+            const open = liveAsk.asks.find((a) => a && !a.answers);
+            markAskAnsweredOnRun(liveAsk, open && open.id, answerPairs);
+          }
+        }
+
         writeSseHeaders(res, extraHeaders);
 
         const runId = createSessionId();
@@ -1726,4 +1746,5 @@ module.exports = {
   findRunByClientTurnId,
   isLoopbackRequest,
   isPrivilegedPost,
+  serializeRun,
 };

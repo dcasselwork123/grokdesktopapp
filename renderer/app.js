@@ -1656,12 +1656,13 @@
   function renderQueue() {
     if (!els.queueStrip) return;
     els.queueStrip.innerHTML = "";
-    if (!state.promptQueue.length) {
+    const visible = state.promptQueue.filter((q) => !q.silent);
+    if (!visible.length) {
       els.queueStrip.classList.add("hidden");
       return;
     }
     els.queueStrip.classList.remove("hidden");
-    for (const item of state.promptQueue) {
+    for (const item of visible) {
       const row = document.createElement("div");
       row.className = "queue-item";
       row.innerHTML =
@@ -1804,6 +1805,7 @@
     reference_to_video: "Video",
     spawn_subagent: "Subagent",
     todo_write: "Todos",
+    ask_user_question: "Ask",
   };
 
   const MEDIA_TOOL_NAMES = new Set([
@@ -2054,6 +2056,7 @@
         <div class="thought-body"></div>
       </div>
       <div class="tools"></div>
+      <div class="question-cards"></div>
       <div class="generated-media hidden"></div>
       <div class="body"></div>`;
     els.messages.appendChild(wrap);
@@ -2061,6 +2064,8 @@
     const shell = {
       el: wrap,
       toolsEl: wrap.querySelector(".tools"),
+      questionsEl: wrap.querySelector(".question-cards"),
+      questionMap: new Map(),
       mediaEl: wrap.querySelector(".generated-media"),
       mediaShown: new Set(),
       bodyEl: wrap.querySelector(".body"),
@@ -2135,7 +2140,13 @@
   }
 
   function upsertTool(shell, src) {
-    if (!shell || !shouldRenderShell(shell) || !shell.toolsEl) return;
+    if (!shell || !shouldRenderShell(shell)) return;
+    const ask = extractAskFromSrc(src);
+    if (ask) {
+      upsertQuestionCard(shell, src, ask);
+      return;
+    }
+    if (!shell.toolsEl) return;
     markToolUsed(shell);
     const info = describeTool(src || {});
     const id = info.id || src.id || src.toolCallId;
@@ -2174,6 +2185,584 @@
         void refreshSessionMedia(shell);
       }
     }
+    scrollToBottom();
+  }
+
+  function clipAskText(value, max) {
+    const s = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+    if (!s) return "";
+    return s.length > max ? s.slice(0, max) : s;
+  }
+
+  function isAskToolName(name) {
+    const key = String(name || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_");
+    return key === "ask_user_question" || key === "askuserquestion";
+  }
+
+  function isOtherOptionLabel(label) {
+    return /^(other|other…|other\.\.\.)(\b|$)/i.test(String(label || "").trim());
+  }
+
+  function normalizeAskOption(raw, index) {
+    if (raw == null) return null;
+    if (typeof raw === "string") {
+      const label = clipAskText(raw, 200);
+      if (!label) return null;
+      return { label, description: "", preview: "", isOther: isOtherOptionLabel(label) };
+    }
+    if (typeof raw !== "object") return null;
+    const label = clipAskText(
+      raw.label || raw.title || raw.value || raw.text || `Option ${index + 1}`,
+      200
+    );
+    if (!label) return null;
+    return {
+      label,
+      description: clipAskText(raw.description || raw.detail || raw.hint || "", 500),
+      preview: raw.preview == null ? "" : clipAskText(raw.preview, 500),
+      isOther: !!(raw.isOther || raw.other || isOtherOptionLabel(label)),
+    };
+  }
+
+  function ensureAskOther(options) {
+    const list = Array.isArray(options) ? options.slice() : [];
+    if (list.some((o) => o && o.isOther)) return list;
+    list.push({
+      label: "Other…",
+      description: "Type your own answer",
+      preview: "",
+      isOther: true,
+    });
+    return list;
+  }
+
+  function normalizeAskQuestion(raw, index) {
+    if (typeof raw === "string") {
+      const question = clipAskText(raw, 800);
+      if (!question) return null;
+      return { question, options: ensureAskOther([]), multiSelect: false };
+    }
+    if (!raw || typeof raw !== "object") return null;
+    const question = clipAskText(
+      raw.question || raw.prompt || raw.text || `Question ${index + 1}`,
+      800
+    );
+    if (!question) return null;
+    const rawOpts = raw.options || raw.choices || [];
+    const options = [];
+    if (Array.isArray(rawOpts)) {
+      for (let i = 0; i < rawOpts.length && options.length < 12; i++) {
+        const opt = normalizeAskOption(rawOpts[i], i);
+        if (opt) options.push(opt);
+      }
+    }
+    return {
+      question,
+      options: ensureAskOther(options),
+      multiSelect: !!(raw.multi_select || raw.multiSelect || raw.multiple),
+    };
+  }
+
+  function extractAskFromSrc(src) {
+    if (!src || typeof src !== "object") return null;
+    const id = src.toolCallId || src.id || null;
+    const named = isAskToolName(src.toolName || src.name || src.kind || src.title);
+    let rawQs = Array.isArray(src.questions) ? src.questions : null;
+    if (!rawQs) {
+      const input = toolInputOf(src);
+      if (Array.isArray(input.questions)) rawQs = input.questions;
+    }
+    if (!rawQs && src._meta && src._meta["x.ai/tool"] && src._meta["x.ai/tool"].input) {
+      const metaIn = src._meta["x.ai/tool"].input;
+      if (Array.isArray(metaIn.questions)) rawQs = metaIn.questions;
+    }
+    const questions = Array.isArray(rawQs)
+      ? rawQs.map(normalizeAskQuestion).filter(Boolean).slice(0, 12)
+      : [];
+    if (!questions.length) {
+      return named ? { id, questions: [], answers: src.answers || null } : null;
+    }
+    return { id, questions, answers: Array.isArray(src.answers) ? src.answers : null };
+  }
+
+  function formatAskAnswersPrompt(pairs, override) {
+    const lines = ["<user_answers>"];
+    for (const p of pairs || []) {
+      lines.push(`Question: ${clipAskText(p.question, 800)}`);
+      lines.push(`Answer: ${clipAskText(p.answer, 800)}`);
+    }
+    lines.push("</user_answers>");
+    const block = lines.join("\n");
+    return override
+      ? `Use this choice instead of any earlier pick.\n\n${block}`
+      : block;
+  }
+
+  function ensureQuestionsEl(shell) {
+    if (shell && shell.questionsEl && shell.questionsEl.isConnected) return shell.questionsEl;
+    if (!shell || !shell.el) return null;
+    let el = shell.el.querySelector(".question-cards");
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "question-cards";
+      if (shell.toolsEl && shell.toolsEl.parentNode) {
+        shell.toolsEl.parentNode.insertBefore(el, shell.toolsEl.nextSibling);
+      } else if (shell.bodyEl && shell.bodyEl.parentNode) {
+        shell.bodyEl.parentNode.insertBefore(el, shell.bodyEl);
+      } else {
+        shell.el.appendChild(el);
+      }
+    }
+    shell.questionsEl = el;
+    return el;
+  }
+
+  function shellFromQuestionEl(el) {
+    if (state.liveShell && state.liveShell.el && el && state.liveShell.el.contains(el)) {
+      return state.liveShell;
+    }
+    const wrap = el && el.closest && el.closest(".msg.assistant");
+    if (!wrap) return state.liveShell;
+    return {
+      el: wrap,
+      toolsEl: wrap.querySelector(".tools"),
+      questionsEl: wrap.querySelector(".question-cards"),
+      bodyEl: wrap.querySelector(".body"),
+      sessionId: state.activeSessionId,
+    };
+  }
+
+  function findExistingQuestionRec(id) {
+    if (!id || !els.messages) return null;
+    let el = null;
+    try {
+      el = els.messages.querySelector(`.question-card[data-ask-id="${CSS.escape(String(id))}"]`);
+    } catch {
+      el = null;
+    }
+    return el && el._askRec ? el._askRec : null;
+  }
+
+  function setQuestionCardMode(el, mode) {
+    if (!el) return;
+    el.classList.remove("pending", "submitting", "answered", "expired");
+    el.classList.add(mode);
+    el.dataset.mode = mode;
+  }
+
+  function upsertQuestionCard(shell, src, ask) {
+    if (!shell || !ask || !shouldRenderShell(shell)) return;
+    const id = ask.id || (src && (src.toolCallId || src.id));
+    if (!id) return;
+    if (!shell.questionMap) shell.questionMap = new Map();
+    let rec = shell.questionMap.get(id) || findExistingQuestionRec(id);
+    const questions =
+      ask.questions && ask.questions.length
+        ? ask.questions
+        : (rec && rec.ask && rec.ask.questions) || [];
+    const answers =
+      (ask.answers && ask.answers.length && ask.answers) ||
+      (src && src.answers && src.answers.length && src.answers) ||
+      (rec && rec.ask && rec.ask.answers) ||
+      null;
+    const status = formatToolStatus((src && src.status) || "");
+    if (!rec) {
+      const host = ensureQuestionsEl(shell);
+      if (!host) return;
+      const el = document.createElement("div");
+      el.className = "question-card pending";
+      el.tabIndex = 0;
+      el.dataset.askId = id;
+      host.appendChild(el);
+      rec = {
+        el,
+        ask: { id, questions, answers },
+        step: 0,
+        picks: [],
+        answersSoFar: [],
+        mode: "pending",
+        toolStatus: status,
+      };
+    } else {
+      rec.ask = rec.ask || { id, questions: [], answers: null };
+      rec.ask.id = id;
+      if (questions.length) rec.ask.questions = questions;
+      if (answers && answers.length) rec.ask.answers = answers;
+      if (status) rec.toolStatus = status;
+      if (!rec.el.isConnected) {
+        const host = ensureQuestionsEl(shell);
+        if (host) host.appendChild(rec.el);
+      }
+    }
+    rec.el._askRec = rec;
+    rec.el.dataset.askId = id;
+    shell.questionMap.set(id, rec);
+
+    if (rec.ask.answers && rec.ask.answers.length) {
+      rec.mode = "answered";
+    } else if (rec.mode === "submitting" || rec.mode === "answered") {
+      /* keep */
+    } else if (state.liveShell === shell && state.running) {
+      rec.mode = "pending";
+    } else if (state.running && state.streamSessionId === state.activeSessionId) {
+      rec.mode = "pending";
+    } else if (rec.mode === "expired") {
+      /* stay expired unless a live run restore flips it above */
+    } else {
+      rec.mode = "expired";
+    }
+    renderQuestionCard(shell, rec);
+  }
+
+  function applyPendingQuestions(shell, run) {
+    const asks = (run && run.pendingQuestions) || [];
+    for (const ask of asks) {
+      if (ask && ((ask.questions && ask.questions.length) || ask.id)) {
+        upsertQuestionCard(shell, ask, ask);
+      }
+    }
+  }
+
+  function expireQuestionCards(shell) {
+    const maps = [];
+    if (shell && shell.questionMap) maps.push(shell.questionMap);
+    if (els.messages) {
+      els.messages.querySelectorAll(".question-card").forEach((el) => {
+        if (el._askRec && el._askRec.mode === "pending") {
+          el._askRec.mode = "expired";
+          renderQuestionCard(shellFromQuestionEl(el), el._askRec);
+        }
+      });
+      return;
+    }
+    for (const map of maps) {
+      for (const rec of map.values()) {
+        if (rec.mode === "pending") {
+          rec.mode = "expired";
+          renderQuestionCard(shell, rec);
+        }
+      }
+    }
+  }
+
+  function currentPickAnswer(rec) {
+    const q = rec.ask.questions[rec.step];
+    if (!q) return null;
+    const pick = rec.picks[rec.step] || { selected: new Set(), otherText: "" };
+    const otherText = String(pick.otherText || "").trim();
+    if (otherText) {
+      return { question: q.question, answer: `Other: ${otherText}` };
+    }
+    const labels = [];
+    for (const i of pick.selected || []) {
+      const opt = q.options[i];
+      if (opt && !opt.isOther) labels.push(opt.label);
+    }
+    if (!labels.length) return null;
+    return { question: q.question, answer: labels.join(", ") };
+  }
+
+  function advanceOrSubmitQuestion(shell, rec) {
+    const answer = currentPickAnswer(rec);
+    if (!answer) return;
+    rec.answersSoFar = rec.answersSoFar || [];
+    rec.answersSoFar[rec.step] = answer;
+    if (rec.step < rec.ask.questions.length - 1) {
+      rec.step += 1;
+      renderQuestionCard(shell, rec);
+      if (rec.el) rec.el.focus();
+      return;
+    }
+    void submitQuestionCard(shell, rec);
+  }
+
+  function commitQuestionOther(shell, rec) {
+    const pick =
+      rec.picks[rec.step] || (rec.picks[rec.step] = { selected: new Set(), otherText: "" });
+    if (!String(pick.otherText || "").trim()) return;
+    pick.selected = new Set();
+    advanceOrSubmitQuestion(shell, rec);
+  }
+
+  function selectQuestionOptionByIndex(rec, index) {
+    const q = rec.ask && rec.ask.questions[rec.step];
+    if (!q || rec.mode !== "pending") return;
+    const shell = shellFromQuestionEl(rec.el);
+    const visible = q.options.filter((o) => !o.isOther);
+    const other = q.options.find((o) => o.isOther);
+    if (index === visible.length && other) {
+      const pick =
+        rec.picks[rec.step] || (rec.picks[rec.step] = { selected: new Set(), otherText: "" });
+      pick.otherOpen = true;
+      renderQuestionCard(shell, rec);
+      const input = rec.el.querySelector(".question-other-input");
+      if (input) input.focus();
+      return;
+    }
+    const opt = visible[index];
+    if (!opt) return;
+    const realIndex = q.options.indexOf(opt);
+    const pick =
+      rec.picks[rec.step] || (rec.picks[rec.step] = { selected: new Set(), otherText: "" });
+    if (q.multiSelect) {
+      if (pick.selected.has(realIndex)) pick.selected.delete(realIndex);
+      else pick.selected.add(realIndex);
+      renderQuestionCard(shell, rec);
+    } else {
+      pick.selected = new Set([realIndex]);
+      pick.otherText = "";
+      advanceOrSubmitQuestion(shell, rec);
+    }
+  }
+
+  async function submitQuestionCard(shell, rec) {
+    if (rec.mode === "submitting" || rec.mode === "answered") return;
+    const pairs = [];
+    for (let i = 0; i < rec.ask.questions.length; i++) {
+      const stored = rec.answersSoFar && rec.answersSoFar[i];
+      if (stored) pairs.push(stored);
+      else if (i === rec.step) {
+        const cur = currentPickAnswer(rec);
+        if (cur) pairs.push(cur);
+      }
+    }
+    if (!pairs.length) return;
+    rec.mode = "submitting";
+    rec.ask.answers = pairs;
+    renderQuestionCard(shell, rec);
+
+    const override = rec.toolStatus === "done";
+    const prompt = formatAskAnswersPrompt(pairs, override);
+    try {
+      state.promptQueue.unshift({
+        id: `q-ans-${Date.now()}`,
+        text: prompt,
+        images: [],
+        silent: true,
+      });
+      rec.mode = "answered";
+      renderQuestionCard(shellFromQuestionEl(rec.el) || shell, rec);
+      if (state.running || state.abortController) {
+        await interruptCurrentTurn();
+      } else {
+        drainPromptQueue();
+      }
+    } catch (err) {
+      rec.mode = "pending";
+      rec.ask.answers = null;
+      state.promptQueue = state.promptQueue.filter((q) => q.text !== prompt);
+      renderQueue();
+      renderQuestionCard(shellFromQuestionEl(rec.el) || shell, rec);
+      appendShellWarning(shell, networkErrorMessage(err));
+    }
+  }
+
+  function renderQuestionCard(shell, rec) {
+    const el = rec && rec.el;
+    if (!el) return;
+    const ask = rec.ask || { questions: [], answers: [] };
+    setQuestionCardMode(el, rec.mode);
+    el._askRec = rec;
+    el.setAttribute("role", "group");
+    el.setAttribute("aria-label", "Question from Grok");
+
+    if (rec.mode === "answered") {
+      el.innerHTML = "";
+      const sum = document.createElement("div");
+      sum.className = "question-card-summary";
+      const title = document.createElement("div");
+      title.className = "question-card-summary-label";
+      title.textContent = "You chose";
+      sum.appendChild(title);
+      for (const a of ask.answers || []) {
+        const row = document.createElement("div");
+        row.className = "question-card-summary-row";
+        const q = document.createElement("div");
+        q.className = "question-card-summary-q";
+        q.textContent = a.question || "";
+        const ans = document.createElement("div");
+        ans.className = "question-card-summary-a";
+        ans.textContent = a.answer || "";
+        row.appendChild(q);
+        row.appendChild(ans);
+        sum.appendChild(row);
+      }
+      el.appendChild(sum);
+      return;
+    }
+
+    if (rec.mode === "expired") {
+      el.innerHTML = "";
+      for (const q of ask.questions || []) {
+        const qel = document.createElement("div");
+        qel.className = "question-card-q";
+        qel.textContent = q.question || "";
+        el.appendChild(qel);
+      }
+      const note = document.createElement("div");
+      note.className = "question-card-expired-note";
+      note.textContent = "Grok moved on. Send a message if you still want to choose.";
+      el.appendChild(note);
+      return;
+    }
+
+    const questions = ask.questions || [];
+    if (!questions.length) {
+      el.innerHTML = "";
+      const wait = document.createElement("div");
+      wait.className = "question-card-q";
+      wait.textContent =
+        rec.mode === "submitting" ? "Sending…" : "Grok is asking a question…";
+      el.appendChild(wait);
+      return;
+    }
+
+    const step = Math.min(rec.step || 0, questions.length - 1);
+    rec.step = step;
+    const q = questions[step];
+    const disabled = rec.mode === "submitting";
+    el.innerHTML = "";
+
+    if (questions.length > 1) {
+      const prog = document.createElement("div");
+      prog.className = "question-card-progress";
+      prog.textContent = `${step + 1} of ${questions.length}`;
+      el.appendChild(prog);
+    }
+
+    const qel = document.createElement("div");
+    qel.className = "question-card-q";
+    qel.textContent = q.question;
+    el.appendChild(qel);
+
+    const opts = document.createElement("div");
+    opts.className = "question-card-options" + (q.multiSelect ? " multi" : "");
+    const pick =
+      rec.picks[step] || (rec.picks[step] = { selected: new Set(), otherText: "", otherOpen: false });
+
+    q.options.forEach((opt, i) => {
+      if (opt.isOther) return;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "question-opt" + (q.multiSelect && pick.selected.has(i) ? " selected" : "");
+      btn.disabled = disabled;
+      const lab = document.createElement("span");
+      lab.className = "question-opt-label";
+      lab.textContent = opt.label;
+      btn.appendChild(lab);
+      if (opt.description) {
+        const desc = document.createElement("span");
+        desc.className = "question-opt-desc";
+        desc.textContent = opt.description;
+        btn.appendChild(desc);
+      }
+      if (opt.preview) {
+        const prev = document.createElement("span");
+        prev.className = "question-opt-preview";
+        prev.textContent = opt.preview;
+        btn.appendChild(prev);
+      }
+      btn.addEventListener("click", () => {
+        if (q.multiSelect) {
+          if (pick.selected.has(i)) pick.selected.delete(i);
+          else pick.selected.add(i);
+          renderQuestionCard(shell, rec);
+        } else {
+          pick.selected = new Set([i]);
+          pick.otherText = "";
+          advanceOrSubmitQuestion(shell, rec);
+        }
+      });
+      opts.appendChild(btn);
+    });
+    el.appendChild(opts);
+
+    const other = q.options.find((o) => o.isOther);
+    if (other) {
+      const otherWrap = document.createElement("div");
+      otherWrap.className = "question-card-other";
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "question-opt other-toggle";
+      toggle.disabled = disabled;
+      const tLab = document.createElement("span");
+      tLab.className = "question-opt-label";
+      tLab.textContent = other.label || "Other…";
+      toggle.appendChild(tLab);
+      if (other.description) {
+        const d = document.createElement("span");
+        d.className = "question-opt-desc";
+        d.textContent = other.description;
+        toggle.appendChild(d);
+      }
+      const field = document.createElement("div");
+      field.className =
+        "question-other-field" + (pick.otherOpen || pick.otherText ? "" : " hidden");
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "question-other-input";
+      input.placeholder = "Your answer";
+      input.value = pick.otherText || "";
+      input.disabled = disabled;
+      input.maxLength = 800;
+      const send = document.createElement("button");
+      send.type = "button";
+      send.className = "question-other-send";
+      send.textContent =
+        questions.length > 1 && step < questions.length - 1 ? "Next" : "Send";
+      send.disabled = disabled;
+      input.addEventListener("input", () => {
+        pick.otherText = input.value;
+      });
+      input.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          ev.stopPropagation();
+          pick.otherText = input.value;
+          commitQuestionOther(shell, rec);
+        }
+      });
+      send.addEventListener("click", () => {
+        pick.otherText = input.value;
+        commitQuestionOther(shell, rec);
+      });
+      toggle.addEventListener("click", () => {
+        pick.otherOpen = !pick.otherOpen;
+        field.classList.toggle("hidden", !pick.otherOpen);
+        if (pick.otherOpen) input.focus();
+      });
+      field.appendChild(input);
+      field.appendChild(send);
+      otherWrap.appendChild(toggle);
+      otherWrap.appendChild(field);
+      el.appendChild(otherWrap);
+    }
+
+    if (q.multiSelect) {
+      const done = document.createElement("button");
+      done.type = "button";
+      done.className = "question-card-done";
+      done.textContent =
+        rec.mode === "submitting"
+          ? "Sending…"
+          : questions.length > 1 && step < questions.length - 1
+            ? "Next"
+            : "Done";
+      done.disabled = disabled;
+      done.addEventListener("click", () => advanceOrSubmitQuestion(shell, rec));
+      el.appendChild(done);
+    }
+
+    if (rec.mode === "submitting") {
+      const sending = document.createElement("div");
+      sending.className = "question-card-sending";
+      sending.textContent = "Sending…";
+      el.appendChild(sending);
+    }
+
     scrollToBottom();
   }
 
@@ -2874,6 +3463,21 @@
       for (const m of msgs) {
         const role = m.role === "user" ? "You" : "Grok";
         lines.push(`## ${role}`, "", String(m.text || "").trim() || "_(empty)_", "");
+        const tools = Array.isArray(m.tools) ? m.tools : [];
+        for (const t of tools) {
+          if (!t || !t.questions || !t.questions.length) continue;
+          lines.push("**Question**", "");
+          for (const q of t.questions) {
+            lines.push(`- ${q.question}`);
+          }
+          if (t.answers && t.answers.length) {
+            lines.push("", "**You chose**", "");
+            for (const a of t.answers) {
+              lines.push(`- ${a.question}: ${a.answer}`);
+            }
+          }
+          lines.push("");
+        }
       }
       const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
       const url = URL.createObjectURL(blob);
@@ -3027,10 +3631,16 @@
       state.activeSessionId && !cwdMismatch && !forkFrom ? state.activeSessionId : null;
 
     state.sendInFlight = true;
-    appendUserMessage(
-      text,
-      pendingImages.map((a) => a.dataUrl)
-    );
+    const silent = !!(opts.silent || (queued && queued.silent));
+    if (!silent) {
+      appendUserMessage(
+        text,
+        pendingImages.map((a) => a.dataUrl)
+      );
+    } else {
+      const empty = els.messages.querySelector(".empty-state");
+      if (empty) empty.remove();
+    }
     els.prompt.value = "";
     clearAttachments();
     autoResizePrompt();
@@ -3311,9 +3921,16 @@
           text: "",
           thought: "",
           toolMap: new Map(),
+          questionsEl: last.querySelector(".question-cards"),
+          questionMap: new Map(),
           toolUsed: !!(last.querySelector(".tool-used-flag") || last.querySelector(".tool-chip")),
           sessionId: state.activeSessionId,
         };
+        last.querySelectorAll(".question-card").forEach((el) => {
+          if (el._askRec && el.dataset.askId) {
+            shell.questionMap.set(el.dataset.askId, el._askRec);
+          }
+        });
         ensureThoughtUi(shell);
         if (shell.toolUsed) markToolUsed(shell);
         return shell;
@@ -3342,6 +3959,14 @@
     if (shell.toolMap && shell.toolsEl) {
       for (const chip of shell.toolMap.values()) {
         if (chip && !shell.toolsEl.contains(chip)) shell.toolsEl.appendChild(chip);
+      }
+    }
+    shell.questionsEl = fresh.questionsEl || shell.questionsEl;
+    if (shell.questionMap && shell.questionsEl) {
+      for (const rec of shell.questionMap.values()) {
+        if (rec && rec.el && !shell.questionsEl.contains(rec.el)) {
+          shell.questionsEl.appendChild(rec.el);
+        }
       }
     }
     if (shell.toolUsed) markToolUsed(shell);
@@ -3387,6 +4012,9 @@
         startedAt: data.run.startedAt || data.startedAt || 0,
         done: !!(data.run.done || data.done),
         clientTurnId: data.run.clientTurnId || data.clientTurnId || null,
+        pendingQuestions: Array.isArray(data.run.pendingQuestions)
+          ? data.run.pendingQuestions
+          : [],
       };
     }
     if (data.runId) {
@@ -3396,6 +4024,9 @@
         startedAt: data.startedAt || 0,
         done: !!data.done,
         clientTurnId: data.clientTurnId || null,
+        pendingQuestions: Array.isArray(data.pendingQuestions)
+          ? data.pendingQuestions
+          : [],
       };
     }
     return null;
@@ -3520,12 +4151,14 @@
         }
         if (state.attachingRunId === run.runId) return;
         const shell = state.liveShell || reuseOrAppendAssistantShell();
+        if (!state.liveShell) state.liveShell = shell;
         const turnGen = nextTurnGen();
         if (pending) {
           state.pendingReattach = { ...pending, sessionId, turnGen };
         }
         setRunning(true, "Reconnecting…");
         showReconnectStatus("Reconnecting…", "info");
+        applyPendingQuestions(shell, run);
         const onSession = (id) => applyStreamSession(id, shell);
         try {
           const first = await attachToRun(run.runId, { shell, sessionId, onSession });
@@ -3789,6 +4422,7 @@
 
     setRunning(true, "Reconnecting…");
     showReconnectStatus("Reconnecting…", "info");
+    applyPendingQuestions(shell, active);
 
     let deferred = false;
     try {
@@ -4095,12 +4729,17 @@
     } else if (type === "tool_call" || type === "tool_call_update") {
       upsertTool(shell, evt);
       if (viewing) {
-        const info = describeTool(evt);
-        const label = [info.kind, info.detail].filter(Boolean).join(" · ");
-        els.runningText.textContent =
-          info.status === "done"
-            ? `${label || "Tool"} done`
-            : label || "Using tools…";
+        const ask = extractAskFromSrc(evt);
+        if (ask) {
+          els.runningText.textContent = "Waiting for your choice…";
+        } else {
+          const info = describeTool(evt);
+          const label = [info.kind, info.detail].filter(Boolean).join(" · ");
+          els.runningText.textContent =
+            info.status === "done"
+              ? `${label || "Tool"} done`
+              : label || "Using tools…";
+        }
       }
       if (isMediaToolName((evt && (evt.toolName || evt.name)) || describeTool(evt).rawName)) {
         const media = mediaPathsFrom(evt);
@@ -4122,12 +4761,16 @@
             ? "⚠️ Turn cancelled."
             : "⚠️ Stopped at the token limit.";
         appendShellWarning(shell, note.replace(/^⚠️\s*/, ""));
-        if (reason === "cancelled") shell.cancelledNote = true;
+        if (reason === "cancelled") {
+          shell.cancelledNote = true;
+          expireQuestionCards(shell);
+        }
       }
     }
   }
 
   async function stopRun() {
+    expireQuestionCards(state.liveShell);
     const pending = state.pendingReattach;
     let runId = state.runId;
     let sessionId = state.streamSessionId || state.activeSessionId || pending?.sessionId;
@@ -4979,6 +5622,14 @@
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === "Tab" || e.key === "Escape") return;
     const tag = (e.target && e.target.tagName) || "";
+    if (tag !== "TEXTAREA" && tag !== "INPUT" && tag !== "SELECT") {
+      const card = e.target && e.target.closest && e.target.closest(".question-card");
+      if (card && card._askRec && /^[1-9]$/.test(e.key)) {
+        e.preventDefault();
+        selectQuestionOptionByIndex(card._askRec, Number(e.key) - 1);
+        return;
+      }
+    }
     if (tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT") return;
     if (e.target && e.target.isContentEditable) return;
     if (

@@ -113,6 +113,10 @@ Typing `/` in an empty composer opens a command menu (filter as you type; ↑/�
 
 Other TUI slash commands (`/compact`, `/theme`, `/plan`, …) are **not** implemented in the desktop app; they would only be sent as plain text if typed.
 
+### In-chat questions
+
+When Grok calls `ask_user_question`, the chat shows a **choice card** (not a tool chip): option buttons, Other…, and a stepper if there are several questions. Tapping an answer sends a follow-up in the **same session** (`<user_answers>` block). Phone and desktop share the card. Reopening the session shows what was asked and what you picked.
+
 ### Copy transcript text
 
 - Highlight text in the chat and **Ctrl+C** / **Cmd+C** (or right-click **Copy** on desktop).
@@ -247,6 +251,7 @@ GrokDesktop/
 │   ├── index.js            ← standalone server entry (no Electron)
 │   ├── httpApi.js          ← REST + SSE chat + static UI + token/cookie auth + /api/setup + /api/auth/login + /api/stt
 │   ├── grokService.js      ← sessions, models, spawn grok -p, image save, setup/auth/login
+│   ├── sessionQuestions.js ← parse ask_user_question + user_answers
 │   ├── speechToText.js     ← Grok STT (POST /v1/stt) using CLI auth or XAI_API_KEY
 │   ├── appUpdate.js        ← git fetch (30 min) + pull / npm install / restart
 │   ├── remoteAccess.js     ← config, token, Tailscale IP, phone URL
@@ -255,7 +260,7 @@ GrokDesktop/
 └── renderer/               ← same UI for desktop window + phone browser
     ├── index.html          ← CSP meta, setup gate, composer, folder control, attach UI, modals
     ├── styles.css          ← desktop + mobile chat layout + setup gate
-    └── app.js              ← setup gate boot, sessions, SSE, folder/images, voice dictation, mobile drawer
+    └── app.js              ← setup gate boot, sessions, SSE, folder/images, voice dictation, question cards
 ```
 
 ### Data flow (short)
@@ -280,6 +285,7 @@ UI (Electron or Safari)
 |------|----------------|
 | UI look / mobile layout | `renderer/styles.css`, `renderer/index.html`, `renderer/app.js` |
 | Chat / sessions / streaming | `server/grokService.js`, `server/httpApi.js`, `renderer/app.js` |
+| **In-chat questions** | `server/sessionQuestions.js`, `server/sessionTranscript.js`, `renderer/app.js` + `styles.css` |
 | **Setup gate / install / sign-in** | `server/grokService.js` (`getSetupStatus`, `startGrokLogin`), `server/httpApi.js`, `renderer/app.js`, `renderer/index.html`, `renderer/styles.css` |
 | Folder picker (native dialog) | `electron/main.js`, `electron/preload.js`, `renderer/app.js` |
 | Access control / first-seen folder | `server/grokService.js` (`buildArgs`), `server/remoteAccess.js`, composer in `renderer/` |
