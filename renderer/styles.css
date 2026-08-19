@@ -258,6 +258,104 @@ a {
   padding-right: 0;
 }
 
+.sidebar-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.session-search-btn {
+  appearance: none;
+  background: transparent;
+  border: none;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.session-search-btn:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.session-search-btn.active,
+.session-search-btn[aria-expanded="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.session-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 10px 8px;
+  padding: 0 8px 0 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.session-search-wrap.hidden {
+  display: none;
+}
+
+.session-search-wrap:focus-within {
+  border-color: #3a3a3a;
+}
+
+.session-search-wrap input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.3;
+  padding: 8px 0;
+  outline: none;
+}
+
+.session-search-wrap input[type="search"]::-webkit-search-cancel-button,
+.session-search-wrap input[type="search"]::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.session-search-wrap input::placeholder {
+  color: var(--text-dim);
+}
+
+.session-search-clear {
+  appearance: none;
+  background: transparent;
+  border: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.session-search-clear:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.session-search-clear.hidden {
+  display: none;
+}
+
 .btn-text {
   appearance: none;
   background: transparent;
@@ -418,6 +516,11 @@ a {
   color: var(--text);
 }
 
+.session-item:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
 .session-item.active {
   background: var(--bg-active);
   color: var(--text);
@@ -565,6 +668,25 @@ body.select-mode .session-item .check {
   font-size: 11px;
   color: var(--text-dim);
   margin-top: 2px;
+}
+
+.session-item .sub.search-snippet {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-item mark.session-hit {
+  background: rgba(153, 102, 203, 0.38);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0;
+}
+
+.msg.search-hit {
+  outline: 1px solid rgba(153, 102, 203, 0.55);
+  outline-offset: 2px;
+  border-radius: 10px;
 }
 
 /* Context menu */
@@ -2816,6 +2938,10 @@ body.select-mode .session-item .check {
 
   body.sidebar-open .sidebar {
     transform: translateX(0);
+  }
+
+  .session-search-wrap input {
+    font-size: 16px;
   }
 
   .sidebar-toggle {

@@ -51,6 +51,10 @@
     folderPickerList: $("#folder-picker-list"),
     folderPickerEmpty: $("#folder-picker-empty"),
     folderPickerCancel: $("#folder-picker-cancel"),
+    btnSessionSearch: $("#btn-session-search"),
+    sessionSearchWrap: $("#session-search-wrap"),
+    sessionSearch: $("#session-search"),
+    btnSessionSearchClear: $("#btn-session-search-clear"),
     btnSelectMode: $("#btn-select-mode"),
     bulkBar: $("#bulk-bar"),
     bulkCount: $("#bulk-count"),
@@ -130,6 +134,10 @@
     selectMode: false,
     selectedIds: new Set(),
     lastClickedSessionId: null,
+    sessionSearch: "",
+    sessionSearchOpen: false,
+    transcriptHits: [],
+    searchGen: 0,
     contextSessionId: null,
     renamingSessionId: null,
     renameDraft: "",
@@ -895,8 +903,155 @@
     return map;
   }
 
+  function normalizeSessionQuery(q) {
+    return String(q || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function sessionMetaMatches(session, query) {
+    const q = normalizeSessionQuery(query).toLowerCase();
+    if (!q || !session) return false;
+    const hay = [session.title, session.project, session.cwd]
+      .filter(Boolean)
+      .join("\n")
+      .toLowerCase();
+    return hay.includes(q);
+  }
+
+  function displayedSessions() {
+    const q = normalizeSessionQuery(state.sessionSearch);
+    if (!q) return state.sessions.slice();
+    const byId = new Map();
+    for (const s of state.sessions) {
+      if (sessionMetaMatches(s, q)) {
+        byId.set(s.id, { ...s, match: "meta" });
+      }
+    }
+    for (const hit of state.transcriptHits || []) {
+      if (!hit || !hit.id) continue;
+      const existing = byId.get(hit.id);
+      if (existing) {
+        if (hit.snippet && hit.match === "transcript") {
+          existing.snippet = hit.snippet;
+          existing.match = existing.match || hit.match;
+        }
+      } else {
+        byId.set(hit.id, { ...hit });
+      }
+    }
+    return [...byId.values()];
+  }
+
+  function setHighlightedText(el, text, query) {
+    const raw = text == null ? "" : String(text);
+    const q = normalizeSessionQuery(query);
+    el.textContent = raw;
+    if (!q || !raw) return;
+    const i = raw.toLowerCase().indexOf(q.toLowerCase());
+    if (i < 0) return;
+    el.textContent = "";
+    if (i > 0) el.append(raw.slice(0, i));
+    const mark = document.createElement("mark");
+    mark.className = "session-hit";
+    mark.textContent = raw.slice(i, i + q.length);
+    el.appendChild(mark);
+    if (i + q.length < raw.length) el.append(raw.slice(i + q.length));
+  }
+
+  function isSessionSearchOpen() {
+    return !!(els.sessionSearchWrap && !els.sessionSearchWrap.classList.contains("hidden"));
+  }
+
+  function updateSessionSearchChrome() {
+    const q = normalizeSessionQuery(state.sessionSearch);
+    if (els.btnSessionSearch) {
+      els.btnSessionSearch.classList.toggle("active", isSessionSearchOpen() || !!q);
+      els.btnSessionSearch.setAttribute("aria-expanded", isSessionSearchOpen() ? "true" : "false");
+    }
+    if (els.btnSessionSearchClear) {
+      els.btnSessionSearchClear.classList.toggle("hidden", !q);
+    }
+    if (els.sessionSearch && els.sessionSearch.value !== state.sessionSearch) {
+      els.sessionSearch.value = state.sessionSearch;
+    }
+  }
+
+  function setSessionSearchOpen(open, { focus = true } = {}) {
+    if (!els.sessionSearchWrap) return;
+    state.sessionSearchOpen = !!open;
+    els.sessionSearchWrap.classList.toggle("hidden", !open);
+    if (open) {
+      if (window.matchMedia && window.matchMedia("(max-width: 800px)").matches) {
+        document.body.classList.add("sidebar-open");
+      }
+      if (focus && els.sessionSearch) {
+        els.sessionSearch.focus();
+        els.sessionSearch.select();
+      }
+    } else if (state.sessionSearch) {
+      applySessionSearch("");
+    }
+    updateSessionSearchChrome();
+  }
+
+  function applySessionSearch(raw) {
+    const next = raw == null ? "" : String(raw);
+    state.sessionSearch = next;
+    if (!normalizeSessionQuery(next)) {
+      state.transcriptHits = [];
+      state.searchGen += 1;
+    }
+    updateSessionSearchChrome();
+    renderSessionList();
+    scheduleTranscriptSearch(next);
+  }
+
+  let searchTimer = null;
+
+  function scheduleTranscriptSearch(raw) {
+    const q = normalizeSessionQuery(raw);
+    if (searchTimer) {
+      clearTimeout(searchTimer);
+      searchTimer = null;
+    }
+    if (!q) return;
+    const gen = ++state.searchGen;
+    searchTimer = setTimeout(async () => {
+      try {
+        const data = await api(`/api/sessions/search?q=${encodeURIComponent(q)}`);
+        if (gen !== state.searchGen) return;
+        state.transcriptHits = data.sessions || [];
+        renderSessionList();
+      } catch {
+        /* keep local title/folder matches */
+      }
+    }, 280);
+  }
+
+  function firstDisplayedSession() {
+    const list = displayedSessions();
+    return list.length ? list[0] : null;
+  }
+
+  function scrollTranscriptToQuery(query) {
+    const q = normalizeSessionQuery(query).toLowerCase();
+    if (!q || !els.messages) return;
+    for (const prev of els.messages.querySelectorAll(".msg.search-hit")) {
+      prev.classList.remove("search-hit");
+    }
+    const msgs = [...els.messages.querySelectorAll(".msg")];
+    for (const msg of msgs) {
+      const body = msg.querySelector(".bubble, .body") || msg;
+      if (!((body.textContent || "").toLowerCase().includes(q))) continue;
+      msg.classList.add("search-hit");
+      msg.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
+  }
+
   function flatSessionIds() {
-    return state.sessions.map((s) => s.id);
+    return displayedSessions().map((s) => s.id);
   }
 
   function isProjectExpanded(project) {
@@ -913,7 +1068,9 @@
   }
 
   function expandProjectForSession(sessionId) {
-    const s = state.sessions.find((x) => x.id === sessionId);
+    const s =
+      displayedSessions().find((x) => x.id === sessionId) ||
+      state.sessions.find((x) => x.id === sessionId);
     if (s?.project) state.expandedProjects.add(s.project);
   }
 
@@ -1158,11 +1315,14 @@
   }
 
   function renderSessionList() {
-    const groups = groupSessions(state.sessions);
+    const q = normalizeSessionQuery(state.sessionSearch);
+    const searching = !!q;
+    const visible = displayedSessions();
+    const groups = groupSessions(visible);
     els.sessionList.innerHTML = "";
     updateSelectModeUI();
 
-    if (state.sessions.length === 0) {
+    if (state.sessions.length === 0 && !searching) {
       const empty = document.createElement("div");
       empty.className = "empty-state";
       empty.style.margin = "24px 8px";
@@ -1172,8 +1332,18 @@
       return;
     }
 
+    if (searching && visible.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.style.margin = "24px 8px";
+      empty.style.fontSize = "13px";
+      empty.textContent = `No chats match "${q}"`;
+      els.sessionList.appendChild(empty);
+      return;
+    }
+
     for (const [project, list] of groups) {
-      const expanded = isProjectExpanded(project);
+      const expanded = searching || isProjectExpanded(project);
       const group = document.createElement("div");
       group.className = "project-group" + (expanded ? "" : " collapsed");
       group.dataset.project = project;
@@ -1195,6 +1365,7 @@
       header.querySelector(".pg-count").textContent = String(list.length);
       header.addEventListener("click", (e) => {
         e.preventDefault();
+        if (searching) return;
         toggleProjectExpanded(project);
       });
       group.appendChild(header);
@@ -1225,8 +1396,17 @@
             <span class="title"></span>
             <span class="sub"></span>
           </span>`;
-        btn.querySelector(".title").textContent = s.title || "Untitled";
-        btn.querySelector(".sub").textContent = relativeTime(s.updatedAt);
+        const titleText = s.title || "Untitled";
+        const titleEl = btn.querySelector(".title");
+        const subEl = btn.querySelector(".sub");
+        if (searching) setHighlightedText(titleEl, titleText, q);
+        else titleEl.textContent = titleText;
+        if (searching && s.match === "transcript" && s.snippet) {
+          subEl.classList.add("search-snippet");
+          setHighlightedText(subEl, s.snippet, q);
+        } else {
+          subEl.textContent = relativeTime(s.updatedAt);
+        }
 
         let suppressClick = false;
 
@@ -1286,7 +1466,7 @@
             toggleSessionSelected(s.id, { range: e.shiftKey });
             return;
           }
-          openSession(s.id);
+          openSession(s.id, searching ? { searchQuery: q } : {});
         });
 
         btn.addEventListener("contextmenu", (e) => {
@@ -3086,7 +3266,8 @@
             }
           }
         }
-        scrollToBottom();
+        if (opts.searchQuery) scrollTranscriptToQuery(opts.searchQuery);
+        else scrollToBottom();
       }
 
       if (sameLive && state.liveShell) {
@@ -5904,6 +6085,58 @@
       setSelectMode(!state.selectMode);
     });
   }
+  if (els.btnSessionSearch) {
+    els.btnSessionSearch.addEventListener("click", () => {
+      setSessionSearchOpen(!isSessionSearchOpen());
+    });
+  }
+  if (els.sessionSearch) {
+    els.sessionSearch.addEventListener("input", () => {
+      applySessionSearch(els.sessionSearch.value);
+    });
+    els.sessionSearch.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (normalizeSessionQuery(state.sessionSearch)) applySessionSearch("");
+        else setSessionSearchOpen(false);
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const first = firstDisplayedSession();
+        if (first) {
+          openSession(first.id, {
+            searchQuery: normalizeSessionQuery(state.sessionSearch) || undefined,
+          });
+        }
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const firstBtn = els.sessionList && els.sessionList.querySelector(".session-item");
+        if (firstBtn && firstBtn.focus) firstBtn.focus();
+      }
+    });
+  }
+  if (els.btnSessionSearchClear) {
+    els.btnSessionSearchClear.addEventListener("click", () => {
+      applySessionSearch("");
+      if (els.sessionSearch) els.sessionSearch.focus();
+    });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (!state.setupReady) return;
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      setSessionSearchOpen(true);
+    }
+    if (e.key === "Escape" && isSessionSearchOpen() && document.activeElement === els.sessionSearch) {
+      e.preventDefault();
+      if (normalizeSessionQuery(state.sessionSearch)) applySessionSearch("");
+      else setSessionSearchOpen(false);
+    }
+  });
   if (els.btnBulkCancel) {
     els.btnBulkCancel.addEventListener("click", () => setSelectMode(false));
   }

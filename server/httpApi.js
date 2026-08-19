@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const {
   listSessions,
+  searchSessions,
   loadSessionMessages,
   loadModels,
   runPrompt,
@@ -1005,6 +1006,12 @@ async function createServer({
         // Don't leak absolute filesystem paths to the client
         const sessions = listSessions({ limit }).map(({ path: _p, ...rest }) => rest);
         sendJson(res, 200, { sessions }, extraHeaders);
+        return;
+      }
+
+      if (pathname === "/api/sessions/search" && req.method === "GET") {
+        const q = parsed.searchParams.get("q") || "";
+        sendJson(res, 200, { query: q, sessions: searchSessions(q) }, extraHeaders);
         return;
       }
 

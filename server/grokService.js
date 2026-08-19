@@ -18,6 +18,7 @@ const { attachMediaToMessages } = require("./sessionMedia");
 const { isSafeSessionId, resolveUnderSessionsRoot } = require("./sessionId");
 const { extractAskUserQuestions, shouldParkForAsk } = require("./sessionQuestions");
 const { continueSessionWithAnswers } = require("./grokAcp");
+const { searchSessions: searchSessionList } = require("./sessionSearch");
 
 function getGrokHome() {
   return process.env.GROK_HOME || path.join(os.homedir(), ".grok");
@@ -505,6 +506,14 @@ function listSessions({ limit = 100, includeOrphans = true } = {}) {
   });
 
   return results.slice(0, limit);
+}
+
+/** Title / folder / transcript search for the sidebar. Never returns disk paths. */
+function searchSessions(query) {
+  const q = String(query || "").trim();
+  if (!q) return [];
+  const sessions = listSessions({ limit: 250 });
+  return searchSessionList(q, { sessions, limit: 80 });
 }
 
 /**
@@ -2000,6 +2009,7 @@ module.exports = {
   logoutGrok,
   getLoginStatus,
   listSessions,
+  searchSessions,
   listSessionsCli,
   findSessionById,
   findSessionPath,

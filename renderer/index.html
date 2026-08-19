@@ -44,7 +44,35 @@
 
       <div class="sidebar-section-row">
         <div class="sidebar-section-label">Sessions</div>
-        <button type="button" id="btn-select-mode" class="btn-text" title="Select multiple sessions">Select</button>
+        <div class="sidebar-section-actions">
+          <button
+            type="button"
+            id="btn-session-search"
+            class="session-search-btn"
+            title="Search sessions (Ctrl+K)"
+            aria-label="Search sessions"
+            aria-expanded="false"
+            aria-controls="session-search"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="M20 20l-3.5-3.5" />
+            </svg>
+          </button>
+          <button type="button" id="btn-select-mode" class="btn-text" title="Select multiple sessions">Select</button>
+        </div>
+      </div>
+      <div id="session-search-wrap" class="session-search-wrap hidden">
+        <input
+          id="session-search"
+          type="search"
+          placeholder="Search chats…"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          enterkeyhint="search"
+        />
+        <button type="button" id="btn-session-search-clear" class="session-search-clear hidden" title="Clear search" aria-label="Clear search">×</button>
       </div>
       <div id="bulk-bar" class="bulk-bar hidden" aria-live="polite">
         <span id="bulk-count" class="bulk-count">0 selected</span>
