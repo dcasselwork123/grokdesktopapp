@@ -206,6 +206,8 @@ Related endpoints:
 
 Both load **current files on disk** — no rebuild step after code edits. Quit the running app and relaunch to pick up changes to `electron/`, `server/`, or `renderer/`. Shared macOS logic: `scripts/start-macos.sh` (Finder PATH, `npm install`, Electron).
 
+**macOS notes:** `npm install` must run **on the Mac** (do not copy a Windows `node_modules`). If Finder refuses the `.app` / `.command` (unsigned git checkout), right-click → **Open**. Do not remove these launchers in favor of `npm start` only.
+
 **Dev / CLI:**
 
 ```powershell
@@ -311,7 +313,7 @@ UI (Electron or Safari)
 
 1. **Read this file first** on fresh sessions about this app.
 2. Keep the stack simple: Electron shell + Node HTTP + vanilla renderer (no React rewrite unless asked).
-3. Preserve double-click launchers; don’t force the user into raw npm for daily use.
+3. Preserve double-click launchers (Windows `.vbs`/`.bat`, macOS `.app`/`.command`); don’t force the user into raw npm for daily use.
 4. Mobile and desktop share `renderer/` — fix auth/CSS so remote assets work (HttpOnly cookie after the one-time `?token=` bootstrap).
 5. Don’t commit secrets; desktop token lives in `~/.grok-desktop/config.json`; **never** commit `~/.grok/auth.json` or API keys.
 6. **Images:** save to disk + pass paths via `-p` (vision through tools). Avoid large `--prompt-json` base64 on Windows/Electron.
