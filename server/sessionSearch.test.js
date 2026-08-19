@@ -171,6 +171,88 @@ test("empty query returns no hits", () => {
   assert.deepStrictEqual(hits, []);
 });
 
+test("findTranscriptHit skips giant tool lines and still finds chat text", () => {
+  const dir = tmpDir();
+  try {
+    const sessionPath = path.join(dir, "sess-huge");
+    fs.mkdirSync(sessionPath);
+    const hugeTool = JSON.stringify({
+      timestamp: 1,
+      method: "session/update",
+      params: {
+        sessionId: "sess-huge",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "t1",
+          raw: "n".repeat(1_500_000),
+        },
+      },
+    });
+    const chat = wrapUpdate(
+      "user_message_chunk",
+      { content: { type: "text", text: "visible chat needle" } },
+      2
+    );
+    fs.writeFileSync(
+      path.join(sessionPath, "updates.jsonl"),
+      hugeTool + "\n" + chat + "\n",
+      "utf8"
+    );
+    const t0 = Date.now();
+    const hit = findTranscriptHit(sessionPath, "needle");
+    assert.ok(Date.now() - t0 < 2000, "search should not stall on huge tool JSON");
+    assert.ok(hit);
+    assert.ok(/needle/i.test(hit.snippet));
+    assert.strictEqual(findTranscriptHit(sessionPath, "sessionUpdate"), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("searchSessions uses sqlite index instead of scanning transcripts", () => {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require("node:sqlite"));
+  } catch {
+    console.log("skip - node:sqlite missing");
+    return;
+  }
+  const dir = tmpDir();
+  try {
+    const a = writeSession(dir, "sess-indexed", {
+      title: "Status inquiry",
+      cwd: "C:\\Dev\\PolybotV3",
+      userText: "unrelated on disk",
+    });
+    const dbPath = path.join(dir, "session_search.sqlite");
+    const db = new DatabaseSync(dbPath);
+    db.exec(`CREATE TABLE session_docs (
+      session_id TEXT PRIMARY KEY,
+      cwd TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      last_indexed_offset INTEGER NOT NULL DEFAULT 0
+    )`);
+    db.prepare(
+      `INSERT INTO session_docs
+        (session_id, cwd, updated_at, title, content, content_hash, last_indexed_offset)
+       VALUES (?, ?, 1, ?, ?, 'h', 0)`
+    ).run(a.id, a.cwd, a.title, "the worker queue is idle in the index");
+    db.close();
+
+    const hits = searchSessions("worker queue", { sessions: [a], dbPath, limit: 10 });
+    assert.strictEqual(hits.length, 1);
+    assert.strictEqual(hits[0].id, a.id);
+    assert.strictEqual(hits[0].match, "transcript");
+    assert.ok(/worker queue/i.test(hits[0].snippet));
+    assert.ok(!("path" in hits[0]));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 if (failed) {
   process.exitCode = 1;
   throw new Error(`${failed} test(s) failed`);

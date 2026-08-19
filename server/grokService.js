@@ -509,11 +509,12 @@ function listSessions({ limit = 100, includeOrphans = true } = {}) {
 }
 
 /** Title / folder / transcript search for the sidebar. Never returns disk paths. */
-function searchSessions(query) {
+function searchSessions(query, { shouldAbort } = {}) {
   const q = String(query || "").trim();
   if (!q) return [];
   const sessions = listSessions({ limit: 250 });
-  return searchSessionList(q, { sessions, limit: 80 });
+  const dbPath = path.join(getGrokHome(), "sessions", "session_search.sqlite");
+  return searchSessionList(q, { sessions, limit: 80, dbPath, shouldAbort });
 }
 
 /**

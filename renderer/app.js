@@ -1008,6 +1008,7 @@
   }
 
   let searchTimer = null;
+  let searchAbort = null;
 
   function scheduleTranscriptSearch(raw) {
     const q = normalizeSessionQuery(raw);
@@ -1015,16 +1016,24 @@
       clearTimeout(searchTimer);
       searchTimer = null;
     }
+    if (searchAbort) {
+      searchAbort.abort();
+      searchAbort = null;
+    }
     if (!q) return;
     const gen = ++state.searchGen;
+    const ac = new AbortController();
+    searchAbort = ac;
     searchTimer = setTimeout(async () => {
       try {
-        const data = await api(`/api/sessions/search?q=${encodeURIComponent(q)}`);
+        const data = await api(`/api/sessions/search?q=${encodeURIComponent(q)}`, {
+          signal: ac.signal,
+        });
         if (gen !== state.searchGen) return;
         state.transcriptHits = data.sessions || [];
         renderSessionList();
       } catch {
-        /* keep local title/folder matches */
+        /* aborted or failed — keep local title/folder matches */
       }
     }, 280);
   }
