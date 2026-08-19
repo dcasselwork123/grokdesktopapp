@@ -1,0 +1,6 @@
+#!/bin/bash
+# Finder double-click entry (no Terminal). Same role as Start Grok Desktop.vbs.
+DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$DIR/../../.." && pwd)"
+chmod +x "$DIR/launcher" "$ROOT/scripts/start-macos.sh" "$ROOT/Start Grok Desktop.command" 2>/dev/null || true
+exec /bin/bash "$ROOT/scripts/start-macos.sh" --quiet

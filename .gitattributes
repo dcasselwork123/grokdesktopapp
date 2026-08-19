@@ -1,0 +1,6 @@
+# macOS launchers must stay Unix (LF). CRLF breaks the shebang on a Mac.
+.gitattributes text eol=lf
+*.command text eol=lf
+scripts/start-macos.sh text eol=lf
+"Start Grok Desktop.app/Contents/MacOS/launcher" text eol=lf
+"Start Grok Desktop.app/Contents/Info.plist" text eol=lf

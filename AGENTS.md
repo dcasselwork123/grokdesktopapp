@@ -195,14 +195,16 @@ Related endpoints:
 
 ## How to start the app
 
-**Preferred (user-facing):** double-click in Explorer:
+**Preferred (user-facing):** double-click in Explorer / Finder:
 
 | File | Notes |
 |------|--------|
-| `Start Grok Desktop.vbs` | Opens Electron with no console (usual daily launch) |
-| `Start Grok Desktop.bat` | Same app; keeps a console if startup fails |
+| `Start Grok Desktop.vbs` | Windows: opens Electron with no console (usual daily launch) |
+| `Start Grok Desktop.app` | macOS: same idea (no Terminal). First run opens the `.command` if Electron is not installed yet |
+| `Start Grok Desktop.bat` | Windows: same app; keeps a console if startup fails |
+| `Start Grok Desktop.command` | macOS: same app; Terminal stays open if startup fails |
 
-Both load **current files on disk** — no rebuild step after code edits. Quit the running app and relaunch to pick up changes to `electron/`, `server/`, or `renderer/`.
+Both load **current files on disk** — no rebuild step after code edits. Quit the running app and relaunch to pick up changes to `electron/`, `server/`, or `renderer/`. Shared macOS logic: `scripts/start-macos.sh` (Finder PATH, `npm install`, Electron).
 
 **Dev / CLI:**
 
@@ -238,8 +240,11 @@ GrokDesktop/
 ├── AGENTS.md               ← this file (read first for app work)
 ├── package.json            ← electron app entry: electron/main.js
 ├── package-lock.json       ← leave in repo; do not touch or nag about it
-├── Start Grok Desktop.vbs  ← double-click launcher (no console)
-├── Start Grok Desktop.bat  ← double-click launcher (errors visible)
+├── Start Grok Desktop.vbs  ← Windows double-click launcher (no console)
+├── Start Grok Desktop.bat  ← Windows double-click launcher (errors visible)
+├── Start Grok Desktop.app  ← macOS double-click launcher (no Terminal)
+├── Start Grok Desktop.command ← macOS double-click launcher (errors visible)
+├── scripts/start-macos.sh  ← shared macOS start (PATH / npm / Electron)
 ├── README.md               ← longer human docs (remote, env vars)
 ├── screenshots/            ← e.g. mobileview.png
 │
@@ -295,7 +300,7 @@ UI (Electron or Safari)
 | Voice dictation | `server/speechToText.js`, `server/httpApi.js` (`POST /api/stt`), `renderer/app.js` + mic in `index.html` / `styles.css`, `electron/main.js` (`installMediaPermissions`) |
 | Mobile new-session projects | `renderer/app.js`, `renderer/index.html` (folder-picker modal) |
 | Tailscale / token / bind | `server/remoteAccess.js`, `electron/main.js`, `server/httpApi.js` |
-| Launch / window startup | `electron/main.js`, `Start Grok Desktop.*` |
+| Launch / window startup | `electron/main.js`, `Start Grok Desktop.*`, `scripts/start-macos.sh` |
 | **Copy chat text (Ctrl+C)** | `electron/main.js` (Edit menu + context menu), `renderer/app.js`, `renderer/styles.css` |
 | **In-app GitHub update** | `server/appUpdate.js`, `server/httpApi.js`, `electron/main.js`, `renderer/app.js` + `index.html` + `styles.css` |
 | First-time deps | `package.json` only if needed; prefer existing electron install |

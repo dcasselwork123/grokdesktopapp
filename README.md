@@ -27,9 +27,13 @@ Then either:
 
 | How | Notes |
 |-----|--------|
-| Double-click **`Start Grok Desktop.vbs`** | Normal daily launch (no console) |
-| Double-click **`Start Grok Desktop.bat`** | Same app; keeps a console if startup fails |
+| Double-click **`Start Grok Desktop.vbs`** (Windows) | Normal daily launch (no console) |
+| Double-click **`Start Grok Desktop.app`** (macOS) | Same idea: opens Electron with no Terminal |
+| Double-click **`Start Grok Desktop.bat`** (Windows) | Same app; keeps a console if startup fails |
+| Double-click **`Start Grok Desktop.command`** (macOS) | Same app; Terminal stays open if startup fails |
 | `npm start` | Electron from a terminal |
+
+On a Mac, clone and `npm install` in Terminal the same way (or skip `npm install` — the first double-click will run it). If Finder says the `.app` / `.command` can’t be opened, right-click → **Open**.
 
 The first window is a **setup gate**, not the chat:
 
