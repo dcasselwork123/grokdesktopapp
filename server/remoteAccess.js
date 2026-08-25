@@ -117,6 +117,27 @@ function setPermissionMode(mode) {
   return mode;
 }
 
+const THEME_PREFS = ["light", "dark", "system"];
+const THEME_DEFAULT = "dark";
+
+function normalizeThemePref(value) {
+  if (THEME_PREFS.includes(value)) return value;
+  return THEME_DEFAULT;
+}
+
+function getThemePref() {
+  const stored = loadConfig();
+  return normalizeThemePref(stored.theme);
+}
+
+function setThemePref(pref) {
+  const next = normalizeThemePref(pref);
+  const stored = loadConfig();
+  stored.theme = next;
+  saveConfig(stored);
+  return next;
+}
+
 function isAllInterfacesHost(host) {
   return host === "0.0.0.0" || host === "::";
 }
@@ -750,6 +771,9 @@ module.exports = {
   isSeenFolder,
   getPermissionMode,
   setPermissionMode,
+  normalizeThemePref,
+  getThemePref,
+  setThemePref,
   normalizeTailscaleDnsName,
   parseTailscaleStatus,
   detectTailscaleStatusSync,

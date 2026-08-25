@@ -17,6 +17,7 @@ const {
   toLoopbackRemoteInfo,
   normalizeStoredCwd,
   folderInSeenList,
+  normalizeThemePref,
 } = require("./remoteAccess");
 
 let failed = 0;
@@ -311,6 +312,16 @@ test("folderInSeenList matches slash/case variants on win32", () => {
     assert.strictEqual(folderInSeenList("c:/dev/grokdesktop", list), true);
     assert.strictEqual(folderInSeenList("c:\\dev\\grokdesktop\\", list), true);
   }
+});
+
+test("normalizeThemePref accepts light/dark/system and defaults to dark", () => {
+  assert.strictEqual(normalizeThemePref("light"), "light");
+  assert.strictEqual(normalizeThemePref("dark"), "dark");
+  assert.strictEqual(normalizeThemePref("system"), "system");
+  assert.strictEqual(normalizeThemePref(""), "dark");
+  assert.strictEqual(normalizeThemePref("auto"), "dark");
+  assert.strictEqual(normalizeThemePref(null), "dark");
+  assert.strictEqual(normalizeThemePref(undefined), "dark");
 });
 
 test("folderInSeenList rejects a different path", () => {

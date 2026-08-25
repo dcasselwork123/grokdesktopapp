@@ -1,11 +1,32 @@
 "use strict";
 
-const { app, BrowserWindow, shell, ipcMain, dialog, Menu, session } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, dialog, Menu, session, nativeTheme } = require("electron");
 const path = require("path");
 const { randomUUID } = require("crypto");
 const { createServer } = require("../server/httpApi");
-const { resolveAccessSettings } = require("../server/remoteAccess");
+const {
+  resolveAccessSettings,
+  getThemePref,
+  setThemePref,
+} = require("../server/remoteAccess");
 const { isSafeExternalUrl, isApiOrigin } = require("../server/externalUrl");
+
+const WINDOW_BG_DARK = "#1a1a1a";
+const WINDOW_BG_LIGHT = "#f3f2f0";
+
+function windowBackgroundColor() {
+  return nativeTheme.shouldUseDarkColors ? WINDOW_BG_DARK : WINDOW_BG_LIGHT;
+}
+
+function applyNativeThemePref(pref) {
+  const next = setThemePref(pref);
+  nativeTheme.themeSource = next;
+  const bg = windowBackgroundColor();
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.setBackgroundColor(bg);
+  }
+  return next;
+}
 
 let mainWindow = null;
 let api = null;
@@ -256,7 +277,7 @@ function windowPrefs(overrides = {}) {
     height: 840,
     minWidth: 900,
     minHeight: 600,
-    backgroundColor: "#1a1a1a",
+    backgroundColor: windowBackgroundColor(),
     title: "Grok Desktop",
     autoHideMenuBar: true,
     show: false,
@@ -490,6 +511,13 @@ if (gotTheLock) {
 
   app.whenReady().then(async () => {
     try {
+      nativeTheme.themeSource = getThemePref();
+      nativeTheme.on("updated", () => {
+        const bg = windowBackgroundColor();
+        for (const w of BrowserWindow.getAllWindows()) {
+          if (!w.isDestroyed()) w.setBackgroundColor(bg);
+        }
+      });
       installAppMenu();
       const { url } = await startApi();
       installMediaPermissions();
@@ -536,6 +564,11 @@ if (gotTheLock) {
     );
   });
 }
+
+ipcMain.handle("set-theme", (_event, pref) => {
+  const next = applyNativeThemePref(pref);
+  return { pref: next, dark: nativeTheme.shouldUseDarkColors };
+});
 
 ipcMain.handle("get-api-info", () => ({
   url: api?.url || null,

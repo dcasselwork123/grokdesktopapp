@@ -79,6 +79,7 @@
     btnAccountLoginX: $("#btn-account-login-x"),
     btnAccountLoginEmail: $("#btn-account-login-email"),
     btnAccountLogout: $("#btn-account-logout"),
+    themeToggle: $("#theme-toggle"),
     reconnectBanner: document.getElementById("reconnect-banner"),
     sessionBanner: document.getElementById("session-banner"),
     sessionBannerText: document.getElementById("session-banner-text"),
@@ -151,6 +152,7 @@
     updateApplying: false,
     lastUpdateCheckAt: 0,
     permissionMode: "bypassPermissions",
+    themePref: "dark",
     accessMenuOpen: false,
     seenFolders: [],
     seenFoldersLocal: [],
@@ -197,6 +199,9 @@
   const VOICE_MAX_FILE_BYTES = 8 * 1024 * 1024;
   const LAST_SESSION_KEY = "grok_desktop_last_session";
   const LAST_CWD_KEY = "grok_desktop_last_cwd";
+  const THEME_PREFS = (window.__grokTheme && window.__grokTheme.PREFS) || ["light", "dark", "system"];
+  const THEME_DEFAULT = (window.__grokTheme && window.__grokTheme.DEFAULT) || "dark";
+  const THEME_KEY = (window.__grokTheme && window.__grokTheme.KEY) || "grok_desktop_theme";
   const MD_DEBOUNCE_MS = 64;
 
   function isMobileViewport() {
@@ -214,6 +219,84 @@
   function isLoopbackPage() {
     const host = String(location.hostname || "").toLowerCase();
     return host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
+  }
+
+  function readThemePref() {
+    if (window.__grokTheme && typeof window.__grokTheme.readPref === "function") {
+      return window.__grokTheme.readPref();
+    }
+    try {
+      const v = localStorage.getItem(THEME_KEY);
+      if (THEME_PREFS.includes(v)) return v;
+    } catch {
+      /* ignore */
+    }
+    return THEME_DEFAULT;
+  }
+
+  function applyThemePref(pref, { persist = false } = {}) {
+    const next = THEME_PREFS.includes(pref) ? pref : THEME_DEFAULT;
+    state.themePref = next;
+    if (window.__grokTheme && typeof window.__grokTheme.apply === "function") {
+      window.__grokTheme.apply(next);
+    } else {
+      const resolved =
+        next === "light" || next === "dark"
+          ? next
+          : window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+            ? "light"
+            : "dark";
+      document.documentElement.setAttribute("data-theme", resolved);
+      document.documentElement.setAttribute("data-theme-pref", next);
+    }
+    syncThemeToggleUi();
+    if (persist) persistThemePref(next);
+  }
+
+  function persistThemePref(pref) {
+    try {
+      localStorage.setItem(THEME_KEY, pref);
+    } catch {
+      /* ignore quota / private mode */
+    }
+    if (window.grokDesktop && typeof window.grokDesktop.setTheme === "function") {
+      Promise.resolve(window.grokDesktop.setTheme(pref)).catch(() => {});
+    }
+    if (isPhoneUi() || (!isElectron() && !isLoopbackPage())) return;
+    api("/api/remote/settings", {
+      method: "POST",
+      body: JSON.stringify({ theme: pref }),
+    }).catch(() => {
+      /* server may ignore until settings persist is live */
+    });
+  }
+
+  function syncThemeToggleUi() {
+    if (!els.themeToggle) return;
+    const current = THEME_PREFS.includes(state.themePref) ? state.themePref : THEME_DEFAULT;
+    for (const btn of els.themeToggle.querySelectorAll("[data-theme-pref]")) {
+      const on = btn.getAttribute("data-theme-pref") === current;
+      btn.setAttribute("aria-checked", on ? "true" : "false");
+      btn.tabIndex = on ? 0 : -1;
+    }
+  }
+
+  function setThemePref(pref) {
+    applyThemePref(pref, { persist: true });
+  }
+
+  applyThemePref(readThemePref(), { persist: false });
+
+  if (window.matchMedia) {
+    const schemeMq = window.matchMedia("(prefers-color-scheme: light)");
+    const onSchemeChange = () => {
+      if (state.themePref === "system") applyThemePref("system", { persist: false });
+    };
+    if (typeof schemeMq.addEventListener === "function") {
+      schemeMq.addEventListener("change", onSchemeChange);
+    } else if (typeof schemeMq.addListener === "function") {
+      schemeMq.addListener(onSchemeChange);
+    }
   }
 
   function persistLastSession(id) {
@@ -6385,6 +6468,34 @@
   if (els.btnAccountLogout) {
     els.btnAccountLogout.addEventListener("click", () => {
       logoutAccount();
+    });
+  }
+  if (els.themeToggle) {
+    els.themeToggle.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-theme-pref]");
+      if (!btn || !els.themeToggle.contains(btn)) return;
+      e.preventDefault();
+      setThemePref(btn.getAttribute("data-theme-pref"));
+    });
+    els.themeToggle.addEventListener("keydown", (e) => {
+      const prefs = THEME_PREFS;
+      const idx = Math.max(0, prefs.indexOf(state.themePref));
+      let nextIdx = -1;
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        nextIdx = (idx + 1) % prefs.length;
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        nextIdx = (idx - 1 + prefs.length) % prefs.length;
+      } else if (e.key === "Home") {
+        nextIdx = 0;
+      } else if (e.key === "End") {
+        nextIdx = prefs.length - 1;
+      }
+      if (nextIdx < 0) return;
+      e.preventDefault();
+      const next = prefs[nextIdx];
+      setThemePref(next);
+      const focusBtn = els.themeToggle.querySelector(`[data-theme-pref="${next}"]`);
+      if (focusBtn) focusBtn.focus();
     });
   }
   document.addEventListener("click", (e) => {

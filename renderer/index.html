@@ -4,17 +4,19 @@
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; base-uri 'self'; form-action 'self'" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
-  <meta name="color-scheme" content="dark" />
+  <meta name="color-scheme" content="dark light" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#1a1a1a" />
   <title>Grok Desktop</title>
+  <script src="theme-boot.js"></script>
   <link rel="stylesheet" href="styles.css" />
   <style>
     /* Critical mobile fallback if stylesheet is delayed */
     @media (max-width: 800px) {
       #modal-backdrop.hidden { display: none !important; }
       body { margin: 0; background: #1a1a1a; color: #e8e8e8; }
+      html[data-theme="light"] body { background: #f3f2f0; color: #1c1b19; }
     }
   </style>
 </head>
@@ -93,13 +95,13 @@
               class="account-bubble unsigned"
               title="Account"
               aria-label="Account"
-              aria-haspopup="menu"
+              aria-haspopup="dialog"
               aria-expanded="false"
               aria-controls="account-popover"
             >
               <span id="account-initials">?</span>
             </button>
-            <div id="account-popover" class="account-popover hidden" role="menu" aria-hidden="true">
+            <div id="account-popover" class="account-popover hidden" role="dialog" aria-label="Account" aria-hidden="true">
               <div class="account-pop-head">
                 <div class="account-pop-avatar" id="account-pop-avatar" aria-hidden="true">?</div>
                 <div class="account-pop-meta">
@@ -107,15 +109,28 @@
                   <div id="account-pop-email" class="account-pop-email"></div>
                 </div>
               </div>
+              <div class="account-pop-theme">
+                <div class="account-pop-theme-label" id="theme-toggle-label">Appearance</div>
+                <div
+                  class="theme-toggle"
+                  id="theme-toggle"
+                  role="radiogroup"
+                  aria-labelledby="theme-toggle-label"
+                >
+                  <button type="button" class="theme-toggle-btn" data-theme-pref="light" role="radio" aria-checked="false">Light</button>
+                  <button type="button" class="theme-toggle-btn" data-theme-pref="dark" role="radio" aria-checked="true">Dark</button>
+                  <button type="button" class="theme-toggle-btn" data-theme-pref="system" role="radio" aria-checked="false">System</button>
+                </div>
+              </div>
               <div class="account-pop-actions">
-                <button type="button" id="btn-account-login-x" class="account-pop-item" role="menuitem">
+                <button type="button" id="btn-account-login-x" class="account-pop-item">
                   Sign in with X
                 </button>
-                <button type="button" id="btn-account-login-email" class="account-pop-item" role="menuitem">
+                <button type="button" id="btn-account-login-email" class="account-pop-item">
                   Sign in with email
                 </button>
                 <div class="context-menu-sep" role="separator"></div>
-                <button type="button" id="btn-account-logout" class="account-pop-item danger" role="menuitem">
+                <button type="button" id="btn-account-logout" class="account-pop-item danger">
                   Log out
                 </button>
               </div>

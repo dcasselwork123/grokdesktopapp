@@ -52,6 +52,8 @@ const {
   addSeenFolder,
   getPermissionMode,
   setPermissionMode,
+  getThemePref,
+  setThemePref,
 } = require("./remoteAccess");
 const { isSafeSessionId } = require("./sessionId");
 const { getUpdateStatus, applyAppUpdate } = require("./appUpdate");
@@ -953,6 +955,7 @@ async function createServer({
           const payload = toLoopbackRemoteInfo(info);
           payload.seenFolders = getSeenFolders();
           payload.permissionMode = getPermissionMode();
+          payload.theme = getThemePref();
           sendJson(res, 200, payload, extraHeaders);
         } else {
           sendJson(res, 200, toPublicRemoteInfo(info), extraHeaders);
@@ -980,9 +983,13 @@ async function createServer({
         if (typeof body.permissionMode === "string") {
           setPermissionMode(body.permissionMode.trim());
         }
+        if (typeof body.theme === "string") {
+          setThemePref(body.theme.trim());
+        }
         const payload = toLoopbackRemoteInfo(await rebind());
         payload.seenFolders = getSeenFolders();
         payload.permissionMode = getPermissionMode();
+        payload.theme = getThemePref();
         sendJson(res, 200, payload, extraHeaders);
         return;
       }
@@ -997,6 +1004,7 @@ async function createServer({
         const payload = toLoopbackRemoteInfo(remote);
         payload.seenFolders = getSeenFolders();
         payload.permissionMode = getPermissionMode();
+        payload.theme = getThemePref();
         sendJson(res, 200, payload, extraHeaders);
         return;
       }
