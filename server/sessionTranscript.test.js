@@ -14,6 +14,10 @@ const {
   isClearedSessionStub,
   clearSessionDir,
   takeClearedSessionStub,
+  isSubagentSessionKind,
+  isSubagentSessionPath,
+  listLinkedSubagentIds,
+  isSubagentSidebarSession,
 } = require("./sessionTranscript");
 
 let failed = 0;
@@ -309,6 +313,7 @@ test("synthesizeSessionMeta uses summary when present", () => {
     assert.strictEqual(meta.numMessages, 12);
     assert.strictEqual(meta.path, sessionPath);
     assert.strictEqual(meta.updatedAt, "2026-08-06T20:11:37Z");
+    assert.strictEqual(meta.sessionKind, null);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -514,6 +519,57 @@ test("clearSessionDir wipes transcript files and marks a stub", () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("synthesizeSessionMeta records session_kind subagent", () => {
+  const dir = tmpDir();
+  const sessionPath = path.join(dir, "01a03aa1-18d3-7f61-b315-f83d87e013aa");
+  try {
+    fs.mkdirSync(sessionPath);
+    fs.writeFileSync(
+      path.join(sessionPath, "summary.json"),
+      JSON.stringify({
+        info: { id: "01a03aa1-18d3-7f61-b315-f83d87e013aa", cwd: "C:\\PolybotV3" },
+        generated_title: "Polymarket API alternatives",
+        session_kind: "subagent",
+      }),
+      "utf8"
+    );
+    const meta = synthesizeSessionMeta(sessionPath, "C:\\PolybotV3");
+    assert.strictEqual(meta.sessionKind, "subagent");
+    assert.strictEqual(isSubagentSessionPath(sessionPath), true);
+    assert.strictEqual(isSubagentSidebarSession(meta), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("listLinkedSubagentIds reads parent subagents folder", () => {
+  const dir = tmpDir();
+  const parent = path.join(dir, "0d568364-3a76-4d5f-989b-f13e5cda871c");
+  const childId = "01a03aa1-18ce-7840-a6dd-d050ba4a87ec";
+  try {
+    fs.mkdirSync(path.join(parent, "subagents", childId), { recursive: true });
+    fs.writeFileSync(path.join(parent, "subagents", "notes.txt"), "ignore", "utf8");
+    const ids = listLinkedSubagentIds(parent);
+    assert.deepStrictEqual(ids, [childId]);
+    assert.strictEqual(isSubagentSidebarSession({ id: childId, sessionKind: null }), false);
+    assert.strictEqual(
+      isSubagentSidebarSession({ id: childId, sessionKind: "subagent" }),
+      true
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("isSubagentSessionKind only matches subagent", () => {
+  assert.strictEqual(isSubagentSessionKind("subagent"), true);
+  assert.strictEqual(isSubagentSessionKind("Subagent"), true);
+  assert.strictEqual(isSubagentSessionKind("  SUBAGENT  "), true);
+  assert.strictEqual(isSubagentSessionKind(null), false);
+  assert.strictEqual(isSubagentSessionKind(""), false);
+  assert.strictEqual(isSubagentSessionKind("main"), false);
 });
 
 test("takeClearedSessionStub leaves a live session alone", () => {

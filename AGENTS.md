@@ -30,7 +30,7 @@ Never force-push. Never commit secrets (`~/.grok/auth.json`, API keys, `~/.grok-
 
 Claude Desktop–style UI for **Grok Build**:
 
-- Left: session list (from `~/.grok/sessions`)
+- Left: session list (from `~/.grok/sessions`; CLI `spawn_subagent` children are hidden)
 - Center: chat (streams `grok -p` headless output)
 - Bottom: model + effort (+ folder on desktop)
 - Remote: same UI over Tailscale in mobile Safari while the app is running
@@ -40,6 +40,10 @@ No Artifacts / Routines / Customize chrome. Sessions are real Grok sessions (sha
 ---
 
 ## Features (keep these working)
+
+### Sidebar (session list)
+
+CLI **subagent** sessions are omitted from the left list and from search. They still run (the parent turn uses them) and remain under `~/.grok/sessions` for the Grok CLI. Detected via `summary.json` `session_kind: "subagent"`. Older chats you renamed and kept using still show even if they were spawned as children. `/btw` side chats are real user sessions and still show.
 
 ### Working folder (cwd)
 

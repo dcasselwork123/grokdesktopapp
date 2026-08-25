@@ -1002,9 +1002,17 @@
     return hay.includes(q);
   }
 
+  function isSubagentSidebarSession(session) {
+    return String((session && session.sessionKind) || "").toLowerCase() === "subagent";
+  }
+
+  function sidebarSessions(list) {
+    return (list || []).filter((s) => s && !isSubagentSidebarSession(s));
+  }
+
   function displayedSessions() {
     const q = normalizeSessionQuery(state.sessionSearch);
-    if (!q) return state.sessions.slice();
+    if (!q) return sidebarSessions(state.sessions);
     const byId = new Map();
     for (const s of state.sessions) {
       if (sessionMetaMatches(s, q)) {
@@ -1023,7 +1031,7 @@
         byId.set(hit.id, { ...hit });
       }
     }
-    return [...byId.values()];
+    return sidebarSessions([...byId.values()]);
   }
 
   function setHighlightedText(el, text, query) {
@@ -1113,7 +1121,7 @@
           signal: ac.signal,
         });
         if (gen !== state.searchGen) return;
-        state.transcriptHits = data.sessions || [];
+        state.transcriptHits = sidebarSessions(data.sessions || []);
         renderSessionList();
       } catch {
         /* aborted or failed — keep local title/folder matches */
@@ -1604,7 +1612,7 @@
   async function refreshSessions() {
     try {
       const data = await api("/api/sessions?limit=100");
-      state.sessions = data.sessions || [];
+      state.sessions = sidebarSessions(data.sessions || []);
       // Drop selections for sessions that no longer exist
       for (const id of [...state.selectedIds]) {
         if (!state.sessions.some((s) => s.id === id)) state.selectedIds.delete(id);

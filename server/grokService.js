@@ -13,6 +13,8 @@ const {
   writeDesktopTitle,
   clearSessionDir,
   takeClearedSessionStub,
+  isSubagentSessionPath,
+  isSubagentSidebarSession,
 } = require("./sessionTranscript");
 const { attachMediaToMessages } = require("./sessionMedia");
 const { isSafeSessionId, resolveUnderSessionsRoot } = require("./sessionId");
@@ -453,8 +455,14 @@ function groupProjectName(cwd) {
 
 /**
  * Scan ~/.grok/sessions for all sessions, grouped by project cwd.
+ * Subagent children (Grok CLI spawn_subagent) stay on disk but are omitted
+ * from the sidebar unless includeSubagents is true.
  */
-function listSessions({ limit = 100, includeOrphans = true } = {}) {
+function listSessions({
+  limit = 100,
+  includeOrphans = true,
+  includeSubagents = false,
+} = {}) {
   const sessionsRoot = path.join(getGrokHome(), "sessions");
   if (!fs.existsSync(sessionsRoot)) return [];
 
@@ -499,13 +507,17 @@ function listSessions({ limit = 100, includeOrphans = true } = {}) {
     }
   }
 
-  results.sort((a, b) => {
+  const visible = includeSubagents
+    ? results
+    : results.filter((s) => !isSubagentSidebarSession(s));
+
+  visible.sort((a, b) => {
     const ta = a.updatedAt ? Date.parse(a.updatedAt) : 0;
     const tb = b.updatedAt ? Date.parse(b.updatedAt) : 0;
     return tb - ta;
   });
 
-  return results.slice(0, limit);
+  return visible.slice(0, limit);
 }
 
 /** Title / folder / transcript search for the sidebar. Never returns disk paths. */
@@ -513,8 +525,17 @@ function searchSessions(query, { shouldAbort } = {}) {
   const q = String(query || "").trim();
   if (!q) return [];
   const sessions = listSessions({ limit: 250 });
+  const listed = new Set(sessions.map((s) => s && s.id).filter(Boolean));
   const dbPath = path.join(getGrokHome(), "sessions", "session_search.sqlite");
-  return searchSessionList(q, { sessions, limit: 80, dbPath, shouldAbort });
+  const hits = searchSessionList(q, { sessions, limit: 80, dbPath, shouldAbort });
+  if (!hits.length) return hits;
+  return hits.filter((hit) => {
+    if (!hit || !hit.id) return false;
+    if (listed.has(hit.id)) return true;
+    const sessionPath = findSessionPath(hit.id);
+    if (!sessionPath) return true;
+    return !isSubagentSessionPath(sessionPath);
+  });
 }
 
 /**

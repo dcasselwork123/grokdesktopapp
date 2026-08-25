@@ -30,6 +30,49 @@ function looksLikeSessionDir(name, dirPath) {
   return false;
 }
 
+function sessionKindFromSummary(summary) {
+  if (!summary || typeof summary.session_kind !== "string") return null;
+  const kind = summary.session_kind.trim().toLowerCase();
+  return kind || null;
+}
+
+/** Grok CLI marks spawn_subagent children with session_kind: "subagent". */
+function isSubagentSessionKind(kind) {
+  return String(kind || "").trim().toLowerCase() === "subagent";
+}
+
+function isSubagentSessionPath(sessionPath) {
+  if (!sessionPath) return false;
+  const summary = safeReadJson(path.join(sessionPath, "summary.json"));
+  return isSubagentSessionKind(sessionKindFromSummary(summary));
+}
+
+/**
+ * Child session ids recorded by the CLI under <session>/subagents/<id>/.
+ * Used as a fallback when a child has no summary.json yet.
+ */
+function listLinkedSubagentIds(sessionPath) {
+  const ids = [];
+  if (!sessionPath) return ids;
+  const dir = path.join(sessionPath, "subagents");
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return ids;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (UUID_RE.test(entry.name)) ids.push(entry.name);
+  }
+  return ids;
+}
+
+function isSubagentSidebarSession(session) {
+  if (!session) return false;
+  return isSubagentSessionKind(session.sessionKind || session.session_kind);
+}
+
 function decodeCwdDirName(name) {
   try {
     return decodeURIComponent(name);
@@ -804,6 +847,7 @@ function synthesizeSessionMeta(sessionPath, groupCwd) {
       (summary &&
         (summary.num_chat_messages ?? summary.num_messages)) ??
       0,
+    sessionKind: sessionKindFromSummary(summary),
     path: sessionPath,
   };
 }
@@ -821,6 +865,11 @@ module.exports = {
   clearSessionDir,
   takeClearedSessionStub,
   sanitizeTitle,
+  sessionKindFromSummary,
+  isSubagentSessionKind,
+  isSubagentSessionPath,
+  listLinkedSubagentIds,
+  isSubagentSidebarSession,
   LARGE_FILE_BYTES,
   MAX_TITLE_LEN,
   DESKTOP_META_FILE,
