@@ -43,7 +43,7 @@ No Artifacts / Routines / Customize chrome. Sessions are real Grok sessions (sha
 
 ### Sidebar (session list)
 
-CLI **subagent** sessions are omitted from the left list and from search. They still run (the parent turn uses them) and remain under `~/.grok/sessions` for the Grok CLI. Detected via `summary.json` `session_kind: "subagent"`. Older chats you renamed and kept using still show even if they were spawned as children. `/btw` side chats are real user sessions and still show.
+CLI **subagent** sessions are omitted from the left list and from search. They still run (the parent turn uses them) and remain under `~/.grok/sessions` for the Grok CLI. Detected via `summary.json` `session_kind` of `subagent` or `subagent_resume` (the CLI forks a new session when it continues a child). Older chats you renamed and kept using still show even if they were spawned as children. `/btw` side chats are real user sessions and still show.
 
 ### Working folder (cwd)
 

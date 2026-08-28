@@ -53,6 +53,7 @@ test("listSessions omits CLI subagent children from the sidebar", () => {
   const groupPath = path.join(home, "sessions", encodeURIComponent(cwd));
   const parentId = "0d568364-3a76-4d5f-989b-f13e5cda871c";
   const childId = "01a03aa1-18d3-7f61-b315-f83d87e013aa";
+  const resumeId = "01a045ed-2ae3-7531-9c23-273fb206d2c0";
   const siblingId = "01a02a59-2d27-7f43-bc12-c0cb3557f8fe";
   try {
     fs.mkdirSync(groupPath, { recursive: true });
@@ -64,7 +65,13 @@ test("listSessions omits CLI subagent children from the sidebar", () => {
       cwd,
       sessionKind: "subagent",
     });
+    writeSession(groupPath, resumeId, {
+      title: "Dust upgrades scaled True Proportional sleeve",
+      cwd,
+      sessionKind: "subagent_resume",
+    });
     fs.mkdirSync(path.join(groupPath, parentId, "subagents", childId), { recursive: true });
+    fs.mkdirSync(path.join(groupPath, parentId, "subagents", resumeId), { recursive: true });
 
     withGrokHome(home, () => {
       const listed = listSessions({ limit: 100 });
@@ -72,12 +79,16 @@ test("listSessions omits CLI subagent children from the sidebar", () => {
       assert.ok(ids.includes(parentId));
       assert.ok(ids.includes(siblingId));
       assert.ok(!ids.includes(childId));
+      assert.ok(!ids.includes(resumeId));
       assert.strictEqual(listed.length, 2);
 
       const all = listSessions({ limit: 100, includeSubagents: true });
       assert.ok(all.some((s) => s.id === childId));
+      assert.ok(all.some((s) => s.id === resumeId));
       const child = all.find((s) => s.id === childId);
       assert.strictEqual(child.sessionKind, "subagent");
+      const resume = all.find((s) => s.id === resumeId);
+      assert.strictEqual(resume.sessionKind, "subagent_resume");
 
       const found = findSessionById(childId);
       assert.ok(found);
@@ -117,6 +128,7 @@ test("searchSessions does not return hidden subagent chats", () => {
   const groupPath = path.join(home, "sessions", encodeURIComponent(cwd));
   const parentId = "0d568364-3a76-4d5f-989b-f13e5cda871c";
   const childId = "01a03aa1-18d3-7f61-b315-f83d87e013aa";
+  const resumeId = "01a045ed-2ae3-7531-9c23-273fb206d2c0";
   try {
     fs.mkdirSync(groupPath, { recursive: true });
     writeSession(groupPath, parentId, { title: "Cut Alchemy usage via Polymarket", cwd });
@@ -125,11 +137,17 @@ test("searchSessions does not return hidden subagent chats", () => {
       cwd,
       sessionKind: "subagent",
     });
+    writeSession(groupPath, resumeId, {
+      title: "Alchemy Polygon CU Cost Optimization Research",
+      cwd,
+      sessionKind: "subagent_resume",
+    });
 
     withGrokHome(home, () => {
       const hits = searchSessions("Alchemy");
       assert.ok(hits.some((h) => h.id === parentId));
       assert.ok(!hits.some((h) => h.id === childId));
+      assert.ok(!hits.some((h) => h.id === resumeId));
     });
   } finally {
     fs.rmSync(home, { recursive: true, force: true });

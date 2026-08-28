@@ -455,8 +455,9 @@ function groupProjectName(cwd) {
 
 /**
  * Scan ~/.grok/sessions for all sessions, grouped by project cwd.
- * Subagent children (Grok CLI spawn_subagent) stay on disk but are omitted
- * from the sidebar unless includeSubagents is true.
+ * Subagent children (Grok CLI spawn_subagent, including subagent_resume
+ * forks) stay on disk but are omitted from the sidebar unless
+ * includeSubagents is true.
  */
 function listSessions({
   limit = 100,

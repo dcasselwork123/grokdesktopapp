@@ -1003,7 +1003,8 @@
   }
 
   function isSubagentSidebarSession(session) {
-    return String((session && session.sessionKind) || "").toLowerCase() === "subagent";
+    const k = String((session && session.sessionKind) || "").trim().toLowerCase();
+    return k === "subagent" || k.startsWith("subagent_") || k.startsWith("subagent-");
   }
 
   function sidebarSessions(list) {

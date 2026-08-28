@@ -544,6 +544,30 @@ test("synthesizeSessionMeta records session_kind subagent", () => {
   }
 });
 
+test("synthesizeSessionMeta records session_kind subagent_resume as hidden", () => {
+  const dir = tmpDir();
+  const sessionPath = path.join(dir, "01a045ed-2ae3-7531-9c23-273fb206d2c0");
+  try {
+    fs.mkdirSync(sessionPath);
+    fs.writeFileSync(
+      path.join(sessionPath, "summary.json"),
+      JSON.stringify({
+        info: { id: "01a045ed-2ae3-7531-9c23-273fb206d2c0", cwd: "C:\\PolybotV3" },
+        generated_title: "Dust upgrades scaled True Proportional sleeve",
+        session_kind: "subagent_resume",
+        parent_session_id: "01a045d7-2ec5-71d0-a2ee-368460890bde",
+      }),
+      "utf8"
+    );
+    const meta = synthesizeSessionMeta(sessionPath, "C:\\PolybotV3");
+    assert.strictEqual(meta.sessionKind, "subagent_resume");
+    assert.strictEqual(isSubagentSessionPath(sessionPath), true);
+    assert.strictEqual(isSubagentSidebarSession(meta), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("listLinkedSubagentIds reads parent subagents folder", () => {
   const dir = tmpDir();
   const parent = path.join(dir, "0d568364-3a76-4d5f-989b-f13e5cda871c");
@@ -563,13 +587,17 @@ test("listLinkedSubagentIds reads parent subagents folder", () => {
   }
 });
 
-test("isSubagentSessionKind only matches subagent", () => {
+test("isSubagentSessionKind matches subagent and resume variants", () => {
   assert.strictEqual(isSubagentSessionKind("subagent"), true);
   assert.strictEqual(isSubagentSessionKind("Subagent"), true);
   assert.strictEqual(isSubagentSessionKind("  SUBAGENT  "), true);
+  assert.strictEqual(isSubagentSessionKind("subagent_resume"), true);
+  assert.strictEqual(isSubagentSessionKind("Subagent_Resume"), true);
+  assert.strictEqual(isSubagentSessionKind("subagent-resume"), true);
   assert.strictEqual(isSubagentSessionKind(null), false);
   assert.strictEqual(isSubagentSessionKind(""), false);
   assert.strictEqual(isSubagentSessionKind("main"), false);
+  assert.strictEqual(isSubagentSessionKind("user"), false);
 });
 
 test("takeClearedSessionStub leaves a live session alone", () => {

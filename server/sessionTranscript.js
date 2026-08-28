@@ -36,9 +36,13 @@ function sessionKindFromSummary(summary) {
   return kind || null;
 }
 
-/** Grok CLI marks spawn_subagent children with session_kind: "subagent". */
+/**
+ * Grok CLI marks spawn_subagent children with session_kind: "subagent".
+ * Continued children are forked as session_kind: "subagent_resume".
+ */
 function isSubagentSessionKind(kind) {
-  return String(kind || "").trim().toLowerCase() === "subagent";
+  const k = String(kind || "").trim().toLowerCase();
+  return k === "subagent" || k.startsWith("subagent_") || k.startsWith("subagent-");
 }
 
 function isSubagentSessionPath(sessionPath) {
