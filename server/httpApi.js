@@ -9,6 +9,7 @@ const {
   searchSessions,
   loadSessionMessages,
   loadModels,
+  DEFAULT_MODEL_ID,
   runPrompt,
   saveImageUpload,
   createSessionId,
@@ -1521,7 +1522,7 @@ async function createServer({
         const forkFrom =
           typeof body.forkFrom === "string" ? body.forkFrom.trim() : "";
         const newSession = !!body.newSession || !sessionId || !!forkFrom;
-        let model = body.model || "grok-4.5";
+        let model = body.model || DEFAULT_MODEL_ID;
         let effort = body.effort || "high";
         let cwd = body.cwd || process.cwd();
         if (remoteChat) {

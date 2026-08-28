@@ -553,6 +553,14 @@ function loadSessionMessages(sessionId) {
   return { session, messages };
 }
 
+const DEFAULT_MODEL_ID = "grok-4.6";
+/** Still valid on disk for old chats; omit from the picker so new sessions don't land on it. */
+const HIDDEN_MODEL_IDS = new Set(["grok-4.5"]);
+
+function isHiddenModelId(id) {
+  return HIDDEN_MODEL_IDS.has(String(id || ""));
+}
+
 function loadModels() {
   const cachePath = path.join(getGrokHome(), "models_cache.json");
   const cache = safeReadJson(cachePath);
@@ -560,9 +568,10 @@ function loadModels() {
   if (cache?.models) {
     for (const [id, entry] of Object.entries(cache.models)) {
       const info = entry.info || entry;
-      if (info.hidden) continue;
+      const modelId = info.id || id;
+      if (info.hidden || isHiddenModelId(modelId)) continue;
       models.push({
-        id: info.id || id,
+        id: modelId,
         name: info.name || id,
         description: info.description || "",
         efforts: (info.reasoning_efforts || []).map((e) => ({
@@ -578,10 +587,11 @@ function loadModels() {
   }
   if (models.length === 0) {
     models.push({
-      id: "grok-4.5",
-      name: "Grok 4.5",
+      id: DEFAULT_MODEL_ID,
+      name: "Grok 4.6",
       description: "Default model",
       efforts: [
+        { id: "xhigh", value: "xhigh", label: "Extra High", default: false },
         { id: "high", value: "high", label: "High", default: true },
         { id: "medium", value: "medium", label: "Medium", default: false },
         { id: "low", value: "low", label: "Low", default: false },
@@ -1057,7 +1067,7 @@ function runPrompt({
   prompt,
   sessionId = null,
   cwd = process.cwd(),
-  model = "grok-4.5",
+  model = DEFAULT_MODEL_ID,
   effort = "high",
   newSession = false,
   images = [],
@@ -2046,6 +2056,7 @@ module.exports = {
   bulkSessionAction,
   loadSessionMessages,
   loadModels,
+  DEFAULT_MODEL_ID,
   runPrompt,
   resolvePermissionMode,
   SAFER_PERMISSION_MODE,

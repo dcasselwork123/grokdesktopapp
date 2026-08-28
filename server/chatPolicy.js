@@ -76,7 +76,7 @@ function findEffort(model, effortId) {
 
 function defaultModel(models) {
   if (!Array.isArray(models) || models.length === 0) return null;
-  return findModel(models, "grok-4.5") || models[0] || null;
+  return findModel(models, "grok-4.6") || models[0] || null;
 }
 
 function defaultEffort(model) {

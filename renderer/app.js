@@ -550,8 +550,20 @@
   }
 
   // ---------- Models / effort ----------
+  const DEFAULT_MODEL_ID = "grok-4.6";
+
+  function isSelectableModel(m) {
+    return !!(m && m.id && m.id !== "grok-4.5");
+  }
+
+  function preferredModelId(models) {
+    const list = Array.isArray(models) ? models.filter(isSelectableModel) : [];
+    if (list.some((x) => x.id === DEFAULT_MODEL_ID)) return DEFAULT_MODEL_ID;
+    return list[0]?.id || DEFAULT_MODEL_ID;
+  }
+
   function getModelValue() {
-    return state.selectedModel || state.models[0]?.id || "grok-4.5";
+    return state.selectedModel || preferredModelId(state.models);
   }
 
   function modelLabel(id) {
@@ -615,7 +627,7 @@
 
   function setModelValue(id, { syncEfforts = true } = {}) {
     const match = state.models.find((x) => x.id === id);
-    const next = match ? match.id : state.models[0]?.id || id || "grok-4.5";
+    const next = match ? match.id : preferredModelId(state.models);
     const changed = state.selectedModel !== next;
     state.selectedModel = next;
     if (els.modelSelectLabel) els.modelSelectLabel.textContent = modelLabel(next);
@@ -630,10 +642,10 @@
   }
 
   function populateModels(models) {
-    state.models = Array.isArray(models) ? models : [];
+    state.models = (Array.isArray(models) ? models : []).filter(isSelectableModel);
     const prev = state.selectedModel;
     const keep = prev && state.models.find((x) => x.id === prev);
-    const next = keep ? keep.id : state.models[0]?.id;
+    const next = keep ? keep.id : preferredModelId(state.models);
     if (next) setModelValue(next);
     else {
       state.selectedModel = null;

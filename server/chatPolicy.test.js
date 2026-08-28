@@ -36,7 +36,7 @@ function throwsHttp(fn, status) {
   return err;
 }
 
-const GROK_MODELS = [{ id: "grok-4.5", efforts: [{ id: "high", value: "high" }] }];
+const GROK_MODELS = [{ id: "grok-4.6", efforts: [{ id: "high", value: "high" }] }];
 
 test("assertRemoteCwd(os.tmpdir(), { knownFolders: [os.tmpdir()] }) succeeds", () => {
   const resolved = assertRemoteCwd(os.tmpdir(), { knownFolders: [os.tmpdir()] });
@@ -99,17 +99,28 @@ test("assertRemoteCwd matches knownFolders case-insensitively on win32", () => {
   assert.strictEqual(path.resolve(resolved).toLowerCase(), tmp.toLowerCase());
 });
 
-test('assertModelEffort("nope", "high", grok-4.5/high) throws', () => {
+test('assertModelEffort("nope", "high", grok-4.6/high) throws', () => {
   throwsHttp(() => assertModelEffort("nope", "high", GROK_MODELS), 400);
 });
 
-test('assertModelEffort("grok-4.5", "insane", grok-4.5/high) throws', () => {
-  throwsHttp(() => assertModelEffort("grok-4.5", "insane", GROK_MODELS), 400);
+test('assertModelEffort("grok-4.6", "insane", grok-4.6/high) throws', () => {
+  throwsHttp(() => assertModelEffort("grok-4.6", "insane", GROK_MODELS), 400);
 });
 
-test("assertModelEffort(undefined, undefined, grok-4.5/high) defaults", () => {
+test("assertModelEffort(undefined, undefined, grok-4.6/high) defaults", () => {
   assert.deepStrictEqual(assertModelEffort(undefined, undefined, GROK_MODELS), {
-    model: "grok-4.5",
+    model: "grok-4.6",
+    effort: "high",
+  });
+});
+
+test("assertModelEffort prefers grok-4.6 when both 4.5 and 4.6 are listed", () => {
+  const models = [
+    { id: "grok-4.5", efforts: [{ id: "high", value: "high" }] },
+    { id: "grok-4.6", efforts: [{ id: "high", value: "high" }] },
+  ];
+  assert.deepStrictEqual(assertModelEffort(undefined, undefined, models), {
+    model: "grok-4.6",
     effort: "high",
   });
 });
