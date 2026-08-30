@@ -151,6 +151,8 @@
     updateTimer: null,
     updateApplying: false,
     lastUpdateCheckAt: 0,
+    // Pin the transcript to the latest output unless the user scrolls up.
+    stickToBottom: true,
     permissionMode: "bypassPermissions",
     themePref: "dark",
     accessMenuOpen: false,
@@ -1894,7 +1896,7 @@
       bubble.appendChild(p);
     }
     els.messages.appendChild(wrap);
-    scrollToBottom();
+    scrollToBottom({ force: true });
     return wrap;
   }
 
@@ -3134,10 +3136,12 @@
 
     if (rec.mode === "pending" && !rec.didFocus) {
       rec.didFocus = true;
-      try {
-        el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      } catch {
-        /* ignore */
+      if (state.stickToBottom) {
+        try {
+          el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        } catch {
+          /* ignore */
+        }
       }
       if (promptLooksIdle()) {
         try {
@@ -3218,9 +3222,48 @@
     }
   }
 
-  function scrollToBottom() {
-    requestAnimationFrame(() => {
+  const NEAR_BOTTOM_PX = 96;
+  let scrollBottomRaf = 0;
+  let scrollBottomForce = false;
+
+  function transcriptOverflows() {
+    const el = els.messages;
+    if (!el) return false;
+    return el.scrollHeight > el.clientHeight + 1;
+  }
+
+  function transcriptNearBottom() {
+    const el = els.messages;
+    if (!el) return true;
+    // Short transcripts always count as "at the bottom" so a trackpad tick
+    // does not unpin follow for the rest of the turn.
+    if (!transcriptOverflows()) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+  }
+
+  function syncStickToBottom() {
+    state.stickToBottom = transcriptNearBottom();
+    if (!state.stickToBottom && scrollBottomRaf && !scrollBottomForce) {
+      cancelAnimationFrame(scrollBottomRaf);
+      scrollBottomRaf = 0;
+    }
+  }
+
+  function scrollToBottom(opts) {
+    const force = opts === true || !!(opts && opts.force);
+    if (!els.messages) return;
+    if (force) state.stickToBottom = true;
+    if (!state.stickToBottom) return;
+    if (force) scrollBottomForce = true;
+    if (scrollBottomRaf) return;
+    scrollBottomRaf = requestAnimationFrame(() => {
+      const forced = scrollBottomForce;
+      scrollBottomRaf = 0;
+      scrollBottomForce = false;
+      if (!els.messages) return;
+      if (!forced && !state.stickToBottom) return;
       els.messages.scrollTop = els.messages.scrollHeight;
+      state.stickToBottom = true;
     });
   }
 
@@ -3347,6 +3390,7 @@
     }
     const switchingAway = state.activeSessionId && state.activeSessionId !== id;
     setActiveSessionId(id);
+    state.stickToBottom = true;
     state.draftMode = false;
     expandProjectForSession(id);
     clearAttachments();
@@ -3380,7 +3424,7 @@
           }
         }
         if (opts.searchQuery) scrollTranscriptToQuery(opts.searchQuery);
-        else scrollToBottom();
+        else scrollToBottom({ force: true });
       }
 
       if (sameLive && state.liveShell) {
@@ -3389,6 +3433,7 @@
         const fresh = reuseOrAppendAssistantShell();
         rebindShell(state.liveShell, fresh);
         showReconnectStatus("Live", "ok");
+        scrollToBottom({ force: true });
         unlockPrompt({ focus: false });
         return;
       }
@@ -3418,6 +3463,7 @@
     if (state.selectMode) setSelectMode(false);
     state.activeSessionId = null;
     if (!opts.preserveLast) persistLastSession(null);
+    state.stickToBottom = true;
     state.draftMode = true;
     setActiveMeta(null);
     const cwd = (opts.cwd || rememberedCwd() || guessDefaultCwd() || "").trim();
@@ -5982,6 +6028,39 @@
   // so Ctrl+C / right-click Copy can use the highlighted text.
   let transcriptPointer = null;
   if (els.messages) {
+    els.messages.addEventListener("scroll", syncStickToBottom, { passive: true });
+    els.messages.addEventListener(
+      "wheel",
+      (e) => {
+        if (e.deltaY >= 0) return;
+        if (!transcriptOverflows()) return;
+        state.stickToBottom = false;
+        if (scrollBottomRaf && !scrollBottomForce) {
+          cancelAnimationFrame(scrollBottomRaf);
+          scrollBottomRaf = 0;
+        }
+      },
+      { passive: true }
+    );
+    els.messages.addEventListener(
+      "touchmove",
+      () => {
+        if (!transcriptOverflows() || transcriptNearBottom()) return;
+        state.stickToBottom = false;
+        if (scrollBottomRaf && !scrollBottomForce) {
+          cancelAnimationFrame(scrollBottomRaf);
+          scrollBottomRaf = 0;
+        }
+      },
+      { passive: true }
+    );
+    els.messages.addEventListener(
+      "load",
+      () => {
+        if (state.stickToBottom) scrollToBottom();
+      },
+      true
+    );
     els.messages.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       transcriptPointer = { x: e.clientX, y: e.clientY };

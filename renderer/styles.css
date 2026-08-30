@@ -1271,7 +1271,7 @@ body.select-mode .session-item .check {
   flex: 1;
   overflow-y: auto;
   padding: 24px 0 16px;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
   user-select: text;
   -webkit-user-select: text;
 }
