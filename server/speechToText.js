@@ -276,6 +276,27 @@ function emptyLiveState() {
   return { finals: [], committed: "", interim: "" };
 }
 
+function foldPhrases(parts) {
+  let acc = "";
+  for (const part of parts || []) {
+    const p = normalizePhrase(part);
+    if (!p) continue;
+    acc = pickBetter(acc, p);
+  }
+  return acc;
+}
+
+/** After a pause the STT often restates prior sentences; don't append a copy. */
+function commitSpeechFinal(finals, utterance) {
+  const next = normalizePhrase(utterance);
+  if (!next) return finals;
+  const prior = foldPhrases(finals);
+  if (!prior) return [next];
+  if (containsWords(next, prior)) return [next];
+  if (containsWords(prior, next)) return finals;
+  return finals.concat(next);
+}
+
 function liveTranscriptText(state) {
   const src = state || emptyLiveState();
   const committed = normalizePhrase(src.committed);
@@ -292,7 +313,7 @@ function liveTranscriptText(state) {
       current = mergeOverlap(committed, interim);
     }
   }
-  return [...(src.finals || []), current].filter(Boolean).join(" ");
+  return foldPhrases([...(src.finals || []), current]);
 }
 
 /**
@@ -311,8 +332,7 @@ function applyLiveTranscript(state, event) {
   if (event && event.speech_final) {
     const current = pickBetter(committed, interim);
     const utterance = next ? pickBetter(current, next) : current;
-    if (utterance) finals.push(utterance);
-    return { finals, committed: "", interim: "" };
+    return { finals: commitSpeechFinal(finals, utterance), committed: "", interim: "" };
   }
 
   if (event && event.is_final) {

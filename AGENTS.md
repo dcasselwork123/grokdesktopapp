@@ -91,10 +91,10 @@ Claude Desktop–style **mic** next to Send. Click to record, click again to sto
 
 | | |
 |--|--|
-| **Live** | `wss://api.x.ai/v1/stt` with `interim_results`, `smart_turn=0.7`, `endpointing=400`. Assemble with `is_final` / `speech_final` (`applyLiveTranscript`) so interims do not wipe or double words. |
+| **Live** | `wss://api.x.ai/v1/stt` with `interim_results`, `smart_turn=0.7`, `endpointing=400`. Assemble with `is_final` / `speech_final` (`applyLiveTranscript`); fold restated `speech_final`s after a pause so the same sentence is not concatenated twice. |
 | **Fallback** | If the live stream returns nothing, batch `POST /api/stt` still transcribes the clip |
 | **Auth** | Same `~/.grok/auth.json` access key as billing (`getAccountAccessKey`), or `XAI_API_KEY`. Never expose the key to the client. |
-| **Audio** | Live: 16 kHz PCM16 chunks (~100 ms). Phone file fallback: Voice Memo / audio file via `POST /api/stt`. Do not persist clips. |
+| **Audio** | Live: 16 kHz PCM16 chunks (~100 ms). Skip near-silent frames so endpointing does not re-commit the same sentence. Phone file fallback: Voice Memo / audio file via `POST /api/stt`. Do not persist clips. |
 | **Desktop** | Electron must allow `media` / microphone for the API origin (`electron/main.js` → `installMediaPermissions`) |
 | **Phone** | Prefer the **HTTPS** phone URL (`https://*.ts.net`, free Tailscale/Let’s Encrypt). Then the live mic works in Chrome/Safari, including “desktop site” / home-screen mode. On plain `http://100.x` the browser will not open the mic; the button falls back to a file picker. |
 

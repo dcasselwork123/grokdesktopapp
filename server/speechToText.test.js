@@ -206,6 +206,54 @@ async function main() {
     assert.strictEqual(liveTranscriptText(s), "hello there how are you");
   });
 
+  await test("applyLiveTranscript does not double after a pause restates the same utterance", () => {
+    let s = emptyLiveState();
+    s = applyLiveTranscript(s, {
+      text: "hello there how are you",
+      is_final: true,
+      speech_final: true,
+    });
+    s = applyLiveTranscript(s, {
+      text: "hello there how are you",
+      is_final: true,
+      speech_final: true,
+    });
+    assert.strictEqual(liveTranscriptText(s), "hello there how are you");
+  });
+
+  await test("applyLiveTranscript replaces finals when a later speech_final is cumulative", () => {
+    let s = emptyLiveState();
+    s = applyLiveTranscript(s, {
+      text: "hello there how are you",
+      is_final: true,
+      speech_final: true,
+    });
+    s = applyLiveTranscript(s, { text: "what time is it", is_final: false });
+    s = applyLiveTranscript(s, {
+      text: "hello there how are you what time is it",
+      is_final: true,
+      speech_final: true,
+    });
+    assert.strictEqual(
+      liveTranscriptText(s),
+      "hello there how are you what time is it"
+    );
+  });
+
+  await test("liveTranscriptText folds a restated committed chunk after speech_final", () => {
+    let s = emptyLiveState();
+    s = applyLiveTranscript(s, {
+      text: "pack the bags for the trip",
+      is_final: true,
+      speech_final: true,
+    });
+    s = applyLiveTranscript(s, {
+      text: "pack the bags for the trip",
+      is_final: true,
+    });
+    assert.strictEqual(liveTranscriptText(s), "pack the bags for the trip");
+  });
+
   await test("buildSttWsUrl uses dictation-friendly endpointing", () => {
     const url = buildSttWsUrl({ language: "en" });
     assert.ok(url.includes("smart_turn=0.7"));

@@ -199,6 +199,8 @@
   const VOICE_MAX_SECONDS = 180;
   const VOICE_TARGET_RATE = 16000;
   const VOICE_MAX_FILE_BYTES = 8 * 1024 * 1024;
+  // Match Quest AudioRecord skip: mean |int16| < 280 → ~0.0085 of full scale.
+  const VOICE_SILENCE_AVG = 280 / 32768;
   const LAST_SESSION_KEY = "grok_desktop_last_session";
   const LAST_CWD_KEY = "grok_desktop_last_cwd";
   const THEME_PREFS = (window.__grokTheme && window.__grokTheme.PREFS) || ["light", "dark", "system"];
@@ -5579,6 +5581,16 @@
       .catch(() => {});
   }
 
+  function isSilentPcmFloat(float32) {
+    if (!float32 || !float32.length) return true;
+    let sum = 0;
+    for (let i = 0; i < float32.length; i++) {
+      const s = float32[i];
+      sum += s < 0 ? -s : s;
+    }
+    return sum / float32.length < VOICE_SILENCE_AVG;
+  }
+
   function flushVoicePcm({ force = false } = {}) {
     const pending = state.voice.pcmPending || [];
     if (!pending.length) return;
@@ -5593,6 +5605,7 @@
     }
     state.voice.pcmPending = [];
     state.voice.pcmCount = 0;
+    if (isSilentPcmFloat(merged)) return;
     enqueueVoicePcm(merged);
   }
 
@@ -5867,7 +5880,10 @@
     state.voice.sampleRate = ctx.sampleRate || VOICE_TARGET_RATE;
     startVoiceStatusPoll(state.voice.sessionId);
     setTimeout(() => {
-      if (state.voice.phase === "recording" && !state.voice.pcmSent) {
+      if (
+        state.voice.phase === "recording" &&
+        !(state.voice.chunks && state.voice.chunks.length)
+      ) {
         setStatus(false, "Mic is open but no audio reached Grok — try again, or check the microphone");
       }
     }, 1800);
