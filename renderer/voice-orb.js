@@ -109,7 +109,7 @@
           : orb.phase === "building"
             ? 1 + 0.07 * Math.sin(t * 8)
             : 1 + 0.03 * Math.sin(t * 2);
-    const r = (Math.min(w, h) / 2) * (on ? 0.78 : 0.62) * pulse;
+    const r = (Math.min(w, h) / 2) * (on ? 0.86 : 0.74) * pulse;
 
     ctx.save();
     ctx.translate(cx, cy);
@@ -126,9 +126,9 @@
       g.addColorStop(0.72, "rgba(40, 190, 210, 0.7)");
       g.addColorStop(1, "rgba(20, 80, 140, 0.15)");
     } else {
-      g.addColorStop(0, "rgba(180, 90, 100, 0.45)");
-      g.addColorStop(0.55, "rgba(90, 50, 70, 0.4)");
-      g.addColorStop(1, "rgba(30, 80, 100, 0.08)");
+      g.addColorStop(0, "rgba(230, 110, 120, 0.9)");
+      g.addColorStop(0.5, "rgba(170, 45, 70, 0.85)");
+      g.addColorStop(1, "rgba(30, 130, 160, 0.45)");
     }
 
     blobPath(ctx, r, t);

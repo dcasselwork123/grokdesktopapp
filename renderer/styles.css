@@ -2097,8 +2097,8 @@ body.select-mode .session-item .check {
   height: 36px;
   padding: 0;
   border-radius: 50%;
-  border: none;
-  background: transparent;
+  border: 1px solid rgba(224, 80, 90, 0.35);
+  background: rgba(40, 20, 28, 0.55);
   color: var(--text-muted);
   display: inline-flex;
   align-items: center;
@@ -2106,7 +2106,7 @@ body.select-mode .session-item .check {
   cursor: pointer;
   flex-shrink: 0;
   overflow: hidden;
-  transition: background 0.12s, opacity 0.12s, box-shadow 0.12s;
+  transition: background 0.12s, opacity 0.12s, box-shadow 0.12s, border-color 0.12s;
 }
 
 .btn-voice-mode canvas {
@@ -2117,11 +2117,14 @@ body.select-mode .session-item .check {
 }
 
 .btn-voice-mode:hover {
-  background: var(--bg-hover);
+  background: rgba(70, 28, 36, 0.8);
+  border-color: rgba(40, 190, 210, 0.45);
 }
 
 .btn-voice-mode[aria-pressed="true"] {
-  box-shadow: 0 0 0 1px rgba(40, 190, 210, 0.35), 0 0 12px rgba(224, 80, 90, 0.28);
+  border-color: rgba(40, 190, 210, 0.7);
+  background: rgba(40, 24, 32, 0.9);
+  box-shadow: 0 0 0 1px rgba(40, 190, 210, 0.45), 0 0 14px rgba(224, 80, 90, 0.45);
 }
 
 .btn-voice-mode.hidden,
@@ -2168,6 +2171,11 @@ body.select-mode .session-item .check {
 .btn-mic.transcribing {
   opacity: 0.55;
   cursor: default;
+}
+
+.btn-mic.voice-ready {
+  color: #7ad7e6;
+  box-shadow: 0 0 0 1px rgba(40, 190, 210, 0.4);
 }
 
 .voice-strip {

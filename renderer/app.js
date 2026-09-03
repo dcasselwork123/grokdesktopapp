@@ -5368,12 +5368,17 @@
     btn.classList.toggle("transcribing", phase === "transcribing");
     btn.setAttribute("aria-pressed", phase === "recording" ? "true" : "false");
     btn.disabled = phase === "transcribing" || !state.setupReady;
+    const modeOn = voiceModeActive();
+    btn.classList.toggle("voice-ready", modeOn && phase === "idle");
     if (phase === "recording") {
-      btn.title = "Stop dictation";
-      btn.setAttribute("aria-label", "Stop dictation");
+      btn.title = modeOn ? "Click to send" : "Stop dictation";
+      btn.setAttribute("aria-label", modeOn ? "Send voice message" : "Stop dictation");
     } else if (phase === "transcribing") {
       btn.title = "Transcribing…";
       btn.setAttribute("aria-label", "Transcribing");
+    } else if (modeOn) {
+      btn.title = "Click to talk — I’ll send when you stop";
+      btn.setAttribute("aria-label", "Click to talk");
     } else if (liveVoiceSupported()) {
       btn.title = "Dictate with Grok";
       btn.setAttribute("aria-label", "Dictate");
@@ -5381,27 +5386,28 @@
       btn.title = "Transcribe a voice memo or audio file";
       btn.setAttribute("aria-label", "Transcribe audio");
     }
-    const modeOn = voiceModeActive();
     if (strip) {
       strip.classList.toggle("hidden", phase === "idle" && !modeOn);
-      strip.classList.toggle("transcribing", phase === "transcribing");
-      strip.classList.toggle("voice-mode", modeOn && phase === "idle");
+      strip.classList.toggle("transcribing", phase === "transcribing" && !modeOn);
+      strip.classList.toggle("voice-mode", modeOn && phase !== "recording");
     }
     if (label) {
       if (phase === "recording") {
         const elapsed = Date.now() - (state.voice.startedAt || Date.now());
-        label.textContent = `Listening ${formatVoiceClock(elapsed)} · words appear as you speak · Esc cancels`;
+        label.textContent = modeOn
+          ? `Listening ${formatVoiceClock(elapsed)} · click the mic again to send · Esc cancels`
+          : `Listening ${formatVoiceClock(elapsed)} · words appear as you speak · Esc cancels`;
       } else if (phase === "transcribing") {
-        label.textContent = "Finishing transcript…";
+        label.textContent = modeOn ? "Sending…" : "Finishing transcript…";
       } else if (modeOn) {
         if (state.voiceMode.phase === "building") {
-          label.textContent = "Voice mode · working…";
+          label.textContent = "Voice mode on · working… I’ll recap when it’s done";
         } else if (state.voiceMode.phase === "confirm") {
-          label.textContent = "Voice mode · confirm to build";
+          label.textContent = "Voice mode on · say yes to build, or Keep planning";
         } else if (state.voiceMode.phase === "speaking") {
-          label.textContent = "Voice mode · speaking";
+          label.textContent = "Voice mode on · speaking · click the mic to interrupt";
         } else {
-          label.textContent = "Voice mode · click mic to talk · I’ll speak back";
+          label.textContent = "Voice mode on · click the mic, talk, click the mic again to send";
         }
       }
     }
@@ -5409,7 +5415,9 @@
       els.prompt.placeholder =
         phase === "recording" ? "Listening…" : "Transcribing…";
     } else if (els.prompt && !state.running) {
-      els.prompt.placeholder = "Type a message or / for commands…";
+      els.prompt.placeholder = modeOn
+        ? "Click the mic to talk…"
+        : "Type a message or / for commands…";
     }
     syncVoiceModeUi();
   }
@@ -6040,10 +6048,12 @@
         });
         if (result && result.text) finalText = String(result.text).trim();
       }
-      if (finalText) {
-        insertTranscript(finalText);
-        if (transcribe && voiceModeActive()) void maybeVoiceAutoSend(finalText);
-      } else if (!state.voice.liveText) {
+      if (finalText) insertTranscript(finalText);
+      const boxed = els.prompt ? String(els.prompt.value || "").trim() : "";
+      const toSend = (finalText || boxed || state.voice.liveText || "").trim();
+      if (transcribe && voiceModeActive() && toSend) {
+        void maybeVoiceAutoSend(toSend);
+      } else if (!toSend) {
         setStatus(false, "Didn't catch that — try again");
       }
     } catch (err) {
@@ -6227,8 +6237,13 @@
       const show = voiceDesktopOk();
       btn.classList.toggle("hidden", !show);
       btn.setAttribute("aria-pressed", state.voiceMode.on ? "true" : "false");
-      btn.title = state.voiceMode.on ? "Voice mode on" : "Voice mode";
-      btn.setAttribute("aria-label", state.voiceMode.on ? "Voice mode on" : "Voice mode");
+      btn.title = state.voiceMode.on
+        ? "Voice mode on — click to turn off"
+        : "Voice mode — click to talk with Grok out loud";
+      btn.setAttribute(
+        "aria-label",
+        state.voiceMode.on ? "Voice mode on" : "Turn on Voice mode"
+      );
     }
     if (window.VoiceOrb && typeof window.VoiceOrb.setState === "function") {
       let phase = "idle";
@@ -6276,6 +6291,10 @@
       state.voiceMode.armToken = null;
       state.voiceMode.ttsMuted = false;
       state.voiceMode.buildTurnLive = false;
+      if (state.voice.phase === "recording") void stopVoice({ transcribe: false });
+      setStatus(true, "Voice mode off");
+    } else {
+      setStatus(true, "Voice mode on — click the mic, talk, click the mic again to send");
     }
     updateVoiceUi();
   }
