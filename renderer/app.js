@@ -17,6 +17,7 @@
     attachStrip: $("#attach-strip"),
     queueStrip: $("#queue-strip"),
     btnMic: $("#btn-mic"),
+    btnVoiceMode: $("#btn-voice-mode"),
     voiceStrip: $("#voice-strip"),
     voiceStripText: $("#voice-strip-text"),
     slashMenu: $("#slash-menu"),
@@ -180,6 +181,27 @@
       insertStart: null,
       insertEnd: null,
       liveText: "",
+    },
+    voiceMode: {
+      on: false,
+      phase: "idle", // idle | speaking | confirm | building
+      armToken: null,
+      speakQueue: [],
+      audio: null,
+      blobUrl: null,
+      ttsMuted: false,
+      lastAssistantText: "",
+      confirmEl: null,
+      speakRaw: "",
+      speakParsed: 0,
+      speakAcc: "",
+      inFence: false,
+      codeSkipSaid: false,
+      draining: false,
+      tickAt: 0,
+      beepCtx: null,
+      unlocked: false,
+      buildTurnLive: false,
     },
   };
 
@@ -924,6 +946,7 @@
     const phone = isPhoneUi();
     if (els.accessSelector) els.accessSelector.classList.toggle("hidden", phone);
     if (phone) closeAccessMenu();
+    if (els.btnVoiceMode) els.btnVoiceMode.classList.toggle("hidden", !voiceDesktopOk());
     updateFolderTrustWarning();
   }
 
@@ -2860,6 +2883,24 @@
     rec.ask.answers = pairs;
     renderQuestionCard(shell, rec);
 
+    if (voiceModeActive() && shouldVoiceArmFromAsk(rec, pairs)) {
+      rec.mode = "answered";
+      renderQuestionCard(shellFromQuestionEl(rec.el) || shell, rec);
+      const joined = pairs.map((p) => p.answer || "").join(" ");
+      await interruptCurrentTurn();
+      if (isVoiceConfirmNo(joined)) {
+        state.voiceMode.phase = "idle";
+        updateVoiceUi();
+        return;
+      }
+      if (isVoiceConfirmYes(joined) || isVoiceBuildIntent(joined)) {
+        void armAndBuild();
+        return;
+      }
+      showBuildConfirmCard();
+      return;
+    }
+
     const override = rec.toolStatus === "done";
     const prompt = formatAskAnswersPrompt(pairs, override);
     try {
@@ -4040,6 +4081,8 @@
       if (slash && slash.rewrite) text = slash.rewrite;
     }
 
+    if (!queued && !sendNow && interceptVoiceBuildUtterance(text)) return;
+
     // CLI: plain Enter mid-turn queues; Ctrl+Enter is cancel-and-send.
     if (!queued && (state.running || state.abortController) && !sendNow) {
       enqueueFollowUp({ text, images: pendingImages });
@@ -4103,6 +4146,17 @@
     if (forkFrom) body.forkFrom = forkFrom;
     if (cwd) body.cwd = cwd;
     if (!isPhoneUi()) body.permissionMode = getPermissionMode();
+    if (voiceModeActive()) {
+      if (state.voiceMode.phase === "building" && state.voiceMode.armToken) {
+        body.voiceTurn = "build";
+        body.armToken = state.voiceMode.armToken;
+        state.voiceMode.buildTurnLive = true;
+      } else {
+        body.voiceTurn = "plan";
+        state.voiceMode.buildTurnLive = false;
+      }
+      resetVoiceSpeakStream();
+    }
     if (pendingImages.length) {
       body.images = pendingImages.map((a) => ({
         data: a.dataUrl,
@@ -4229,6 +4283,19 @@
     } finally {
       clearInterval(heartbeat);
       state.sendInFlight = false;
+      if (
+        voiceModeActive() &&
+        state.voiceMode.phase === "building" &&
+        !sawDone &&
+        !deferred
+      ) {
+        state.voiceMode.phase = "idle";
+        state.voiceMode.armToken = null;
+        state.voiceMode.ttsMuted = false;
+        state.voiceMode.buildTurnLive = false;
+        stopBeeps();
+        updateVoiceUi();
+      }
       if (aborted) {
         clearPendingReattach();
         if (turnGen === state.turnGen) await finishTurn(gotSessionId);
@@ -5152,6 +5219,7 @@
           }
         }
         flushAssistantMarkdown(shell);
+        onVoiceTurnDone(shell);
         break;
       default:
         break;
@@ -5164,6 +5232,9 @@
     const viewing = !shell || state.liveShell === shell;
     if (type === "text") {
       updateAssistantText(shell, evt.data || "");
+      if (voiceModeActive() && state.voiceMode.phase !== "building") {
+        feedVoiceSpeak(evt.data || "");
+      }
       if (viewing) els.runningText.textContent = "Writing…";
     } else if (type === "thought") {
       const chunk = evt.data != null ? String(evt.data) : "";
@@ -5179,6 +5250,9 @@
       }
     } else if (type === "tool_call" || type === "tool_call_update") {
       upsertTool(shell, evt);
+      if (voiceModeActive() && state.voiceMode.phase === "building") {
+        playToolTick(evt);
+      }
       if (viewing) {
         const ask = extractAskFromSrc(evt);
         if (ask) {
@@ -5307,9 +5381,11 @@
       btn.title = "Transcribe a voice memo or audio file";
       btn.setAttribute("aria-label", "Transcribe audio");
     }
+    const modeOn = voiceModeActive();
     if (strip) {
-      strip.classList.toggle("hidden", phase === "idle");
+      strip.classList.toggle("hidden", phase === "idle" && !modeOn);
       strip.classList.toggle("transcribing", phase === "transcribing");
+      strip.classList.toggle("voice-mode", modeOn && phase === "idle");
     }
     if (label) {
       if (phase === "recording") {
@@ -5317,6 +5393,16 @@
         label.textContent = `Listening ${formatVoiceClock(elapsed)} · words appear as you speak · Esc cancels`;
       } else if (phase === "transcribing") {
         label.textContent = "Finishing transcript…";
+      } else if (modeOn) {
+        if (state.voiceMode.phase === "building") {
+          label.textContent = "Voice mode · working…";
+        } else if (state.voiceMode.phase === "confirm") {
+          label.textContent = "Voice mode · confirm to build";
+        } else if (state.voiceMode.phase === "speaking") {
+          label.textContent = "Voice mode · speaking";
+        } else {
+          label.textContent = "Voice mode · click mic to talk · I’ll speak back";
+        }
       }
     }
     if (els.prompt && phase !== "idle") {
@@ -5325,6 +5411,7 @@
     } else if (els.prompt && !state.running) {
       els.prompt.placeholder = "Type a message or / for commands…";
     }
+    syncVoiceModeUi();
   }
 
   function insertTranscript(text) {
@@ -5775,8 +5862,10 @@
         }),
       });
       const text = result && result.text ? String(result.text).trim() : "";
-      if (text) insertTranscript(text);
-      else setStatus(false, "Didn't catch that — try again");
+      if (text) {
+        insertTranscript(text);
+        if (voiceModeActive()) void maybeVoiceAutoSend(text);
+      } else setStatus(false, "Didn't catch that — try again");
     } catch (err) {
       setStatus(false, (err && err.message) || "Transcription failed");
     } finally {
@@ -5951,8 +6040,10 @@
         });
         if (result && result.text) finalText = String(result.text).trim();
       }
-      if (finalText) insertTranscript(finalText);
-      else if (!state.voice.liveText) {
+      if (finalText) {
+        insertTranscript(finalText);
+        if (transcribe && voiceModeActive()) void maybeVoiceAutoSend(finalText);
+      } else if (!state.voice.liveText) {
         setStatus(false, "Didn't catch that — try again");
       }
     } catch (err) {
@@ -5969,11 +6060,611 @@
 
   async function toggleVoice() {
     if (state.voice.phase === "transcribing") return;
+    state.voiceMode.unlocked = true;
+    if (isVoiceSpeaking()) stopTts();
     if (state.voice.phase === "recording") {
       await stopVoice({ transcribe: true });
       return;
     }
     await startVoice();
+  }
+
+  // ---------- Voice mode (Jarvis) ----------
+  const VOICE_BUILD_EXACT = new Set([
+    "go ahead",
+    "go ahead and build",
+    "go ahead and build this",
+    "go ahead and build it",
+    "go ahead and build this now",
+    "go ahead and build it now",
+    "build it",
+    "build this",
+    "build this now",
+    "build it now",
+    "make it so",
+    "ship it",
+    "do it",
+    "execute",
+    "lets build",
+    "let us build",
+    "yes build",
+    "implement it",
+    "implement this",
+    "proceed",
+  ]);
+  const VOICE_CONFIRM_YES = new Set([
+    "yes",
+    "y",
+    "yeah",
+    "yep",
+    "confirm",
+    "do it",
+    "build",
+    "ok",
+    "okay",
+    "yes please",
+    "yes build",
+  ]);
+  const VOICE_CONFIRM_NO = new Set([
+    "no",
+    "nope",
+    "not yet",
+    "wait",
+    "cancel",
+    "keep planning",
+    "dont",
+    "do not",
+    "stop",
+    "dont build",
+    "do not build",
+  ]);
+
+  function voiceDesktopOk() {
+    return (isElectron() || isLoopbackPage()) && !isPhoneUi();
+  }
+
+  function voiceModeActive() {
+    return !!(state.voiceMode.on && voiceDesktopOk());
+  }
+
+  function normalizeVoiceIntent(text) {
+    return String(text || "")
+      .toLowerCase()
+      .replace(/['’]/g, "")
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function isVoiceBlockedPhrase(n) {
+    if (!n) return true;
+    if (n.startsWith("what should i build")) return true;
+    if (n.startsWith("go ahead and tell")) return true;
+    if (n.startsWith("go ahead and explain")) return true;
+    if (/\btell me more\b/.test(n)) return true;
+    if (/\bdont build\b/.test(n) || /\bdo not build\b/.test(n)) return true;
+    return false;
+  }
+
+  function isVoiceBuildIntent(text) {
+    const n = normalizeVoiceIntent(text);
+    if (!n || isVoiceBlockedPhrase(n)) return false;
+    return VOICE_BUILD_EXACT.has(n);
+  }
+
+  function isVoiceConfirmYes(text) {
+    const n = normalizeVoiceIntent(text);
+    if (!n || isVoiceBlockedPhrase(n)) return false;
+    return VOICE_CONFIRM_YES.has(n) || VOICE_BUILD_EXACT.has(n);
+  }
+
+  function isVoiceConfirmNo(text) {
+    const n = normalizeVoiceIntent(text);
+    if (!n) return false;
+    return VOICE_CONFIRM_NO.has(n);
+  }
+
+  function looksLikeVoiceBuildAsk(text) {
+    const n = normalizeVoiceIntent(text);
+    if (!n) return false;
+    return /\b(build|implement|shall i)\b/.test(n);
+  }
+
+  function shouldVoiceArmFromAsk(rec, pairs) {
+    void pairs;
+    const questions = (rec && rec.ask && rec.ask.questions) || [];
+    const qtext = questions
+      .map((q) => [q.question, q.header, q.prompt].filter(Boolean).join(" "))
+      .join(" ");
+    return looksLikeVoiceBuildAsk(qtext);
+  }
+
+  function extractSpeakBlock(fullText) {
+    const raw = String(fullText || "").replace(/\r\n/g, "\n");
+    const lines = raw.split("\n");
+    const start = lines.findIndex((line) => /^\s*SPEAK:\s*/i.test(line));
+    if (start !== -1) {
+      const first = lines[start].replace(/^\s*SPEAK:\s*/i, "");
+      const parts = [];
+      if (first.trim()) parts.push(first.trim());
+      for (let i = start + 1; i < lines.length; i++) {
+        if (!lines[i].trim()) break;
+        if (/^\s*```/.test(lines[i])) break;
+        parts.push(lines[i].trim());
+      }
+      const joined = parts.join(" ").trim();
+      if (joined) return joined;
+    }
+    const stripped = raw
+      .replace(/^\s*#{1,6}\s+.+$/gm, "")
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!stripped) return "";
+    const sentences = stripped.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [stripped];
+    return sentences
+      .slice(0, 3)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+  }
+
+  function stripSpeakMarkdown(s) {
+    return String(s || "")
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/\*([^*]+)\*/g, "$1")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function syncVoiceModeUi() {
+    const btn = els.btnVoiceMode;
+    if (btn) {
+      const show = voiceDesktopOk();
+      btn.classList.toggle("hidden", !show);
+      btn.setAttribute("aria-pressed", state.voiceMode.on ? "true" : "false");
+      btn.title = state.voiceMode.on ? "Voice mode on" : "Voice mode";
+      btn.setAttribute("aria-label", state.voiceMode.on ? "Voice mode on" : "Voice mode");
+    }
+    if (window.VoiceOrb && typeof window.VoiceOrb.setState === "function") {
+      let phase = "idle";
+      if (state.voiceMode.on) {
+        if (state.voice.phase === "recording") phase = "listening";
+        else if (state.voiceMode.phase === "idle" && isVoiceSpeaking()) phase = "speaking";
+        else phase = state.voiceMode.phase || "idle";
+      }
+      window.VoiceOrb.setState({ on: state.voiceMode.on, phase });
+    }
+  }
+
+  function initVoiceModeUi() {
+    const btn = els.btnVoiceMode;
+    if (btn) {
+      if (window.VoiceOrb && typeof window.VoiceOrb.mount === "function") {
+        const canvas = btn.querySelector("canvas");
+        if (canvas) window.VoiceOrb.mount(canvas);
+      }
+      btn.addEventListener("pointermove", (e) => {
+        const r = btn.getBoundingClientRect();
+        const nx = ((e.clientX - r.left) / Math.max(1, r.width)) * 2 - 1;
+        const ny = ((e.clientY - r.top) / Math.max(1, r.height)) * 2 - 1;
+        if (window.VoiceOrb) window.VoiceOrb.setCursor(nx, ny);
+      });
+      btn.addEventListener("pointerleave", () => {
+        if (window.VoiceOrb) window.VoiceOrb.setCursor(0, 0);
+      });
+      btn.addEventListener("click", () => {
+        state.voiceMode.unlocked = true;
+        toggleVoiceMode();
+      });
+    }
+    syncVoiceModeUi();
+  }
+
+  function toggleVoiceMode() {
+    if (!voiceDesktopOk()) return;
+    state.voiceMode.on = !state.voiceMode.on;
+    if (!state.voiceMode.on) {
+      stopTts();
+      stopBeeps();
+      dismissBuildConfirmCard();
+      state.voiceMode.phase = "idle";
+      state.voiceMode.armToken = null;
+      state.voiceMode.ttsMuted = false;
+      state.voiceMode.buildTurnLive = false;
+    }
+    updateVoiceUi();
+  }
+
+  function interceptVoiceBuildUtterance(text) {
+    if (!voiceModeActive() || state.voiceMode.phase === "building") return false;
+    const t = String(text || "").trim();
+    if (!t) return false;
+    if (state.voiceMode.phase === "confirm" && isVoiceConfirmNo(t)) {
+      dismissBuildConfirmCard();
+      if (els.prompt) els.prompt.value = "";
+      autoResizePrompt();
+      return true;
+    }
+    if (isVoiceBuildIntent(t) || (state.voiceMode.phase === "confirm" && isVoiceConfirmYes(t))) {
+      if (els.prompt) els.prompt.value = "";
+      autoResizePrompt();
+      if (state.voiceMode.phase === "confirm") void armAndBuild();
+      else showBuildConfirmCard();
+      return true;
+    }
+    return false;
+  }
+
+  function maybeVoiceAutoSend(finalText) {
+    const t = String(finalText || "").trim();
+    if (!t || !voiceModeActive()) return;
+    if (interceptVoiceBuildUtterance(t)) return;
+    void sendPrompt();
+  }
+
+  function showBuildConfirmCard() {
+    if (!voiceModeActive()) return;
+    if (!state.activeSessionId) {
+      setStatus(false, "Plan something first.");
+      return;
+    }
+    dismissBuildConfirmCard();
+    stopTts();
+    state.voiceMode.phase = "confirm";
+    const cwd = getCwd() || "this folder";
+    const wrap = document.createElement("div");
+    wrap.className = "msg assistant";
+    wrap.innerHTML = `
+      <div class="question-card pending voice-build-card" role="group" aria-label="Build this now?">
+        <div class="question-card-q">Build this now?</div>
+        <p class="question-card-hint">Grok will be able to edit files and run commands in ${escapeHtml(cwd)}.</p>
+        <div class="question-card-options">
+          <button type="button" class="question-opt" data-voice-build="yes">Build</button>
+          <button type="button" class="question-opt" data-voice-build="no">Keep planning</button>
+        </div>
+      </div>`;
+    const empty = els.messages.querySelector(".empty-state");
+    if (empty) empty.remove();
+    els.messages.appendChild(wrap);
+    wrap.querySelector('[data-voice-build="yes"]').addEventListener("click", () => {
+      void armAndBuild();
+    });
+    wrap.querySelector('[data-voice-build="no"]').addEventListener("click", () => {
+      dismissBuildConfirmCard();
+    });
+    state.voiceMode.confirmEl = wrap;
+    scrollToBottom();
+    updateVoiceUi();
+  }
+
+  function dismissBuildConfirmCard() {
+    const el = state.voiceMode.confirmEl;
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+    state.voiceMode.confirmEl = null;
+    if (state.voiceMode.phase === "confirm") state.voiceMode.phase = "idle";
+    updateVoiceUi();
+  }
+
+  async function armAndBuild() {
+    if (!voiceModeActive()) return;
+    if (!state.activeSessionId) {
+      setStatus(false, "Plan something first.");
+      dismissBuildConfirmCard();
+      return;
+    }
+    stopTts();
+    state.voiceMode.ttsMuted = true;
+    state.voiceMode.phase = "building";
+    state.voiceMode.buildTurnLive = false;
+    dismissBuildConfirmCard();
+    if (state.running || state.abortController) {
+      await interruptCurrentTurn();
+    }
+    let armed;
+    try {
+      armed = await api("/api/voice/arm", {
+        method: "POST",
+        body: JSON.stringify({ sessionId: state.activeSessionId }),
+      });
+    } catch (err) {
+      state.voiceMode.phase = "idle";
+      state.voiceMode.ttsMuted = false;
+      setStatus(false, (err && err.message) || "Could not arm build");
+      updateVoiceUi();
+      return;
+    }
+    state.voiceMode.armToken = armed && armed.token;
+    if (!state.voiceMode.armToken) {
+      state.voiceMode.phase = "idle";
+      state.voiceMode.ttsMuted = false;
+      setStatus(false, "Could not arm build");
+      updateVoiceUi();
+      return;
+    }
+    if (els.prompt) els.prompt.value = "Build this now";
+    updateVoiceUi();
+    await sendPrompt({ sendNow: true });
+  }
+
+  function resetVoiceSpeakStream() {
+    const vm = state.voiceMode;
+    vm.speakRaw = "";
+    vm.speakParsed = 0;
+    vm.speakAcc = "";
+    vm.inFence = false;
+    vm.codeSkipSaid = false;
+    vm.lastAssistantText = "";
+  }
+
+  function feedVoiceSpeak(chunk) {
+    if (!voiceModeActive() || state.voiceMode.phase === "building" || state.voiceMode.ttsMuted) {
+      return;
+    }
+    const vm = state.voiceMode;
+    vm.lastAssistantText += chunk;
+    vm.speakRaw += chunk;
+    const pieces = takeSpeakableSentences(false);
+    for (const p of pieces) enqueueSpeak(p);
+  }
+
+  function takeSpeakableSentences(flush) {
+    const vm = state.voiceMode;
+    const raw = vm.speakRaw || "";
+    let i = vm.speakParsed || 0;
+    let acc = vm.speakAcc || "";
+    let inFence = !!vm.inFence;
+    const out = [];
+    while (i < raw.length) {
+      if (!inFence && raw.startsWith("```", i)) {
+        const t = stripSpeakMarkdown(acc);
+        if (t) out.push(t);
+        acc = "";
+        inFence = true;
+        i += 3;
+        if (!vm.codeSkipSaid) {
+          vm.codeSkipSaid = true;
+          out.push("The code is on screen.");
+        }
+        continue;
+      }
+      if (inFence) {
+        const end = raw.indexOf("```", i);
+        if (end === -1) {
+          i = raw.length;
+          break;
+        }
+        inFence = false;
+        i = end + 3;
+        continue;
+      }
+      const ch = raw[i];
+      acc += ch;
+      i += 1;
+      if (ch === "." || ch === "!" || ch === "?" || ch === "\n") {
+        const t = stripSpeakMarkdown(acc);
+        if (t) out.push(t);
+        acc = "";
+      }
+    }
+    if (flush) {
+      const t = stripSpeakMarkdown(acc);
+      if (t) out.push(t);
+      acc = "";
+    }
+    vm.speakParsed = i;
+    vm.speakAcc = acc;
+    vm.inFence = inFence;
+    return out;
+  }
+
+  function onVoiceTurnDone(shell) {
+    if (!voiceModeActive()) return;
+    const text = (shell && shell.text) || state.voiceMode.lastAssistantText || "";
+    if (state.voiceMode.phase === "confirm") {
+      stopTts();
+      return;
+    }
+    if (state.voiceMode.phase === "building") {
+      if (!state.voiceMode.buildTurnLive) return;
+      state.voiceMode.buildTurnLive = false;
+      state.voiceMode.armToken = null;
+      stopBeeps();
+      playReadyChime();
+      const recap = extractSpeakBlock(text);
+      state.voiceMode.ttsMuted = false;
+      state.voiceMode.phase = recap ? "speaking" : "idle";
+      updateVoiceUi();
+      if (recap) enqueueSpeak(recap);
+      return;
+    }
+    const rest = takeSpeakableSentences(true);
+    for (const p of rest) enqueueSpeak(p);
+  }
+
+  function isVoiceSpeaking() {
+    const vm = state.voiceMode;
+    if (vm.audio && !vm.audio.paused) return true;
+    return !!(vm.speakQueue && vm.speakQueue.length) || !!vm.draining;
+  }
+
+  function stopTts() {
+    const vm = state.voiceMode;
+    vm.speakQueue = [];
+    if (vm.audio) {
+      try {
+        vm.audio.pause();
+        vm.audio.removeAttribute("src");
+        vm.audio.load();
+      } catch {
+        /* ignore */
+      }
+      vm.audio = null;
+    }
+    if (typeof vm.ttsResolve === "function") {
+      const resolve = vm.ttsResolve;
+      vm.ttsResolve = null;
+      try {
+        resolve();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (vm.blobUrl) {
+      try {
+        URL.revokeObjectURL(vm.blobUrl);
+      } catch {
+        /* ignore */
+      }
+      vm.blobUrl = null;
+    }
+    if (vm.phase === "speaking") vm.phase = "idle";
+    updateVoiceUi();
+  }
+
+  function enqueueSpeak(text) {
+    const t = stripSpeakMarkdown(text);
+    if (!t) return;
+    if (!voiceModeActive() || state.voiceMode.ttsMuted) return;
+    if (state.voiceMode.phase === "building") return;
+    state.voiceMode.speakQueue.push(t);
+    void drainSpeakQueue();
+  }
+
+  async function drainSpeakQueue() {
+    const vm = state.voiceMode;
+    if (vm.draining) return;
+    vm.draining = true;
+    if (vm.phase === "idle") {
+      vm.phase = "speaking";
+      updateVoiceUi();
+    }
+    try {
+      while (vm.speakQueue.length) {
+        if (!voiceModeActive() || vm.ttsMuted || vm.phase === "building") {
+          vm.speakQueue = [];
+          break;
+        }
+        const next = vm.speakQueue.shift();
+        try {
+          await playTtsChunk(next);
+        } catch {
+          /* skip a failed sentence */
+        }
+      }
+    } finally {
+      vm.draining = false;
+      if (vm.phase === "speaking" && !vm.speakQueue.length) {
+        vm.phase = "idle";
+        updateVoiceUi();
+      }
+    }
+  }
+
+  async function playTtsChunk(text) {
+    const t = String(text || "").trim().slice(0, 2000);
+    if (!t) return;
+    const res = await fetch(apiUrl("/api/tts"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: t, voice: "rex" }),
+    });
+    if (!res.ok) {
+      let msg = res.statusText;
+      try {
+        const j = await res.json();
+        msg = j.error || msg;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const vm = state.voiceMode;
+    if (vm.blobUrl) {
+      try {
+        URL.revokeObjectURL(vm.blobUrl);
+      } catch {
+        /* ignore */
+      }
+    }
+    vm.blobUrl = url;
+    await new Promise((resolve, reject) => {
+      const audio = new Audio(url);
+      vm.audio = audio;
+      const done = (err) => {
+        audio.onended = null;
+        audio.onerror = null;
+        if (vm.ttsResolve === doneOk) vm.ttsResolve = null;
+        if (vm.audio === audio) vm.audio = null;
+        if (err) reject(err);
+        else resolve();
+      };
+      const doneOk = () => done();
+      vm.ttsResolve = doneOk;
+      audio.onended = doneOk;
+      audio.onerror = () => done(new Error("Speech playback failed"));
+      const p = audio.play();
+      if (p && typeof p.then === "function") {
+        p.catch((err) => done(err));
+      }
+    });
+  }
+
+  function ensureBeepCtx() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    if (!state.voiceMode.beepCtx) state.voiceMode.beepCtx = new AC();
+    const ctx = state.voiceMode.beepCtx;
+    if (ctx.state === "suspended") {
+      try {
+        ctx.resume();
+      } catch {
+        /* ignore */
+      }
+    }
+    return ctx;
+  }
+
+  function beep(freq, dur) {
+    const ctx = ensureBeepCtx();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.04, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + dur);
+  }
+
+  function playToolTick(evt) {
+    if (!voiceModeActive() || state.voiceMode.phase !== "building") return;
+    const name = String((evt && (evt.toolName || evt.name)) || "").toLowerCase();
+    if (name.includes("thought")) return;
+    const now = Date.now();
+    if (now - (state.voiceMode.tickAt || 0) < 330) return;
+    state.voiceMode.tickAt = now;
+    const status = String((evt && evt.status) || "").toLowerCase();
+    const done = status === "completed" || status === "done" || formatToolStatus(evt && evt.status) === "done";
+    beep(done ? 620 : 880, 0.08);
+  }
+
+  function playReadyChime() {
+    beep(523, 0.1);
+    setTimeout(() => beep(784, 0.12), 110);
+  }
+
+  function stopBeeps() {
+    /* oscillators are fire-and-forget; nothing to stop */
   }
 
   // ---------- Prompt box ----------
@@ -6238,6 +6929,7 @@
       void toggleVoice();
     });
   }
+  initVoiceModeUi();
   if (els.fileVoice) {
     els.fileVoice.addEventListener("change", () => {
       const file = els.fileVoice.files && els.fileVoice.files[0];

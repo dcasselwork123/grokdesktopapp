@@ -71,7 +71,7 @@ Persist as `permissionMode` in `~/.grok-desktop/config.json`. Do not take a perm
 
 ### Electron chrome / CSP
 
-- **CSP** in `renderer/index.html` `<head>`: `default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; base-uri 'self'; form-action 'self'`. Keep the critical inline `<style>`; no `unsafe-inline` scripts. Audio worklet: `renderer/pcm-tap-worklet.js`.
+- **CSP** in `renderer/index.html` `<head>`: `default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; base-uri 'self'; form-action 'self'`. Keep the critical inline `<style>`; no `unsafe-inline` scripts. Audio worklet: `renderer/pcm-tap-worklet.js`. TTS audio uses blob URLs (`media-src`).
 - **`openExternal` / context-menu “Open link”:** only `http:` and `https:` (`server/externalUrl.js` → `isSafeExternalUrl`). Deny `file:`, `javascript:`, `data:`, custom protocols.
 - **`will-navigate` / `will-redirect`:** only the API origin (`http://127.0.0.1:<port>` / `localhost`). If the API is not up yet, deny navigation away from the current URL. Always `{ action: "deny" }` for in-window popups.
 
@@ -101,6 +101,21 @@ Claude Desktop–style **mic** next to Send. Click to record, click again to sto
 Max clip ~3 minutes / 8 MB. Empty transcript → “Didn’t catch that”.
 
 Server: `server/speechToText.js` (`createLiveTranscriber`). UI: `renderer/app.js` + composer mic in `index.html`.
+
+### Voice mode (desktop)
+
+Orb **left of the mic**. Desktop only (hidden on phone). Default **off**, not remembered across relaunch.
+
+When on:
+
+- Click-to-talk **auto-sends** (Voice off still fills the composer only).
+- Grok **speaks** planning replies (Rex, via `POST /api/tts` — proxied; key never hits the client).
+- Planning turns spawn with `--tools` allowlist (`read_file,list_dir,grep,web_search,todo_write`) plus `--no-subagents`. Typed Enter while Voice is on is also a planning turn.
+- Saying *go ahead / build it / make it so / …* shows an app **Build this now?** card. Confirm mints a loopback-only one-time arm token (`POST /api/voice/arm`) and starts a **new** full-access `grok -p` on the **same session**. Do not continue the planning process via ACP.
+- During that build: mute TTS, light tool beeps, then speak a short recap (`SPEAK:` or first sentences).
+- Remote/phone cannot arm a build. `voiceTurn: "build"` without a valid arm is rejected.
+
+**Honest limit:** this is not a sandbox against a hostile repo. Same as Access control.
 
 ### Slash commands (app-handled)
 
@@ -260,11 +275,13 @@ GrokDesktop/
 │
 ├── server/
 │   ├── index.js            ← standalone server entry (no Electron)
-│   ├── httpApi.js          ← REST + SSE chat + static UI + token/cookie auth + /api/setup + /api/auth/login + /api/stt
+│   ├── httpApi.js          ← REST + SSE chat + static UI + token/cookie auth + /api/setup + /api/auth/login + /api/stt + /api/tts + /api/voice/arm
 │   ├── grokService.js      ← sessions, models, spawn grok -p, image save, setup/auth/login
 │   ├── sessionQuestions.js ← parse ask_user_question + user_answers
 │   ├── grokAcp.js          ← ACP stdio client for mid-turn answers
 │   ├── speechToText.js     ← Grok STT (POST /v1/stt) using CLI auth or XAI_API_KEY
+│   ├── textToSpeech.js     ← Grok TTS (POST /v1/tts) proxied; Rex
+│   ├── voiceGate.js        ← Voice-mode allowlist, prompt wrappers, arm tokens
 │   ├── appUpdate.js        ← git fetch (30 min) + pull / npm install / restart
 │   ├── remoteAccess.js     ← config, token, Tailscale IP, phone URL
 │   └── externalUrl.js      ← http(s)-only openExternal; API-origin navigation
@@ -272,7 +289,8 @@ GrokDesktop/
 └── renderer/               ← same UI for desktop window + phone browser
     ├── index.html          ← CSP meta, setup gate, composer, folder control, attach UI, modals
     ├── styles.css          ← desktop + mobile chat layout + setup gate
-    └── app.js              ← setup gate boot, sessions, SSE, folder/images, voice dictation, question cards
+    ├── app.js              ← setup gate boot, sessions, SSE, folder/images, voice dictation, Voice mode, question cards
+    └── voice-orb.js        ← Voice-mode canvas blob (no deps)
 ```
 
 ### Data flow (short)
@@ -304,6 +322,7 @@ UI (Electron or Safari)
 | External links / CSP / will-navigate | `server/externalUrl.js`, `electron/main.js` (`attachCommonWindowHandlers`), `renderer/index.html` `<head>` |
 | Images / attachments | `renderer/app.js`, `server/httpApi.js`, `server/grokService.js` |
 | Voice dictation | `server/speechToText.js`, `server/httpApi.js` (`POST /api/stt`), `renderer/app.js` + mic in `index.html` / `styles.css`, `electron/main.js` (`installMediaPermissions`) |
+| **Voice mode** | `renderer/voice-orb.js`, `server/voiceGate.js`, `server/textToSpeech.js`, `server/httpApi.js` (`POST /api/voice/arm`, `POST /api/tts`), `renderer/app.js` + orb in `index.html` / `styles.css` |
 | Mobile new-session projects | `renderer/app.js`, `renderer/index.html` (folder-picker modal) |
 | Tailscale / token / bind | `server/remoteAccess.js`, `electron/main.js`, `server/httpApi.js` |
 | Launch / window startup | `electron/main.js`, `Start Grok Desktop.*`, `scripts/start-macos.sh` |

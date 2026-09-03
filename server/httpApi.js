@@ -32,6 +32,12 @@ const {
   normalizeRelMedia,
 } = require("./sessionMedia");
 const { transcribeAudio, createLiveTranscriber, decodePcmPayload } = require("./speechToText");
+const { synthesizeSpeech } = require("./textToSpeech");
+const {
+  createArmToken,
+  consumeArmToken,
+  wrapVoicePrompt,
+} = require("./voiceGate");
 const {
   buildRemoteInfo,
   normalizeRemoteAddress,
@@ -99,6 +105,17 @@ function sendJson(res, status, body, extraHeaders = {}) {
   res.end(data);
 }
 
+function sendBytes(res, status, buf, contentType, extraHeaders = {}) {
+  const body = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || []);
+  res.writeHead(status, {
+    "Content-Type": contentType || "application/octet-stream",
+    "Cache-Control": "no-store",
+    "Content-Length": body.length,
+    ...extraHeaders,
+  });
+  res.end(body);
+}
+
 function readBody(req, { maxBytes = 2 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -148,6 +165,7 @@ const PRIVILEGED_POST_PATHS = new Set([
   "/api/remote/settings",
   "/api/remote/rotate",
   "/api/sessions/bulk",
+  "/api/voice/arm",
 ]);
 
 const LOOPBACK_ONLY_BODY = {
@@ -1396,6 +1414,89 @@ async function createServer({
         return;
       }
 
+      if (pathname === "/api/voice/arm" && req.method === "POST") {
+        let body;
+        try {
+          body = await readBody(req);
+        } catch {
+          sendJson(res, 400, { error: "Invalid JSON body" }, extraHeaders);
+          return;
+        }
+        const sid = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+        if (isRejectedSessionId(sid)) {
+          sendJson(res, 400, { error: "sessionId is required" }, extraHeaders);
+          return;
+        }
+        try {
+          const armed = createArmToken(sid);
+          sendJson(
+            res,
+            200,
+            { token: armed.token, expiresAt: armed.expiresAt },
+            extraHeaders
+          );
+        } catch (err) {
+          sendJson(
+            res,
+            err && err.status ? err.status : 400,
+            { error: (err && err.message) || "Could not arm build" },
+            extraHeaders
+          );
+        }
+        return;
+      }
+
+      if (pathname === "/api/tts" && req.method === "POST") {
+        let body;
+        try {
+          body = await readBody(req, { maxBytes: 32 * 1024 });
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            {
+              error:
+                err.message === "Body too large"
+                  ? "Text is too long"
+                  : "Invalid JSON body",
+            },
+            extraHeaders
+          );
+          return;
+        }
+        if (!isLoopbackRequest(req)) {
+          try {
+            chatRateLimiter.check(presented || req.socket.remoteAddress);
+          } catch (err) {
+            sendJson(
+              res,
+              err && err.status ? err.status : 429,
+              { error: (err && err.message) || String(err) },
+              extraHeaders
+            );
+            return;
+          }
+        }
+        try {
+          const result = await synthesizeSpeech({
+            text: body.text || body.prompt || "",
+            voice: body.voice || "rex",
+          });
+          sendBytes(res, 200, result.audio, result.contentType, extraHeaders);
+        } catch (err) {
+          sendJson(
+            res,
+            err && err.status ? err.status : 500,
+            {
+              error: (err && err.message) || "Speech failed",
+              code: (err && err.code) || null,
+            },
+            extraHeaders
+          );
+        }
+        return;
+      }
+
       if (pathname === "/api/stt" && req.method === "POST") {
         let body;
         try {
@@ -1566,6 +1667,43 @@ async function createServer({
         const clientTurnId =
           typeof body.clientTurnId === "string" ? body.clientTurnId.trim().slice(0, 80) : "";
 
+        let voiceTurn = null;
+        if (!remoteChat) {
+          const rawTurn = typeof body.voiceTurn === "string" ? body.voiceTurn.trim() : "";
+          if (rawTurn === "plan" || rawTurn === "build") {
+            voiceTurn = rawTurn;
+          } else if (rawTurn) {
+            sendJson(res, 400, { error: "Unknown voiceTurn" }, extraHeaders);
+            return;
+          }
+        }
+        if (voiceTurn === "build") {
+          const armToken = typeof body.armToken === "string" ? body.armToken.trim() : "";
+          if (!consumeArmToken(armToken, forcedId)) {
+            sendJson(
+              res,
+              403,
+              { error: "Build is not armed", code: "VOICE_ARM_REQUIRED" },
+              extraHeaders
+            );
+            return;
+          }
+        }
+        let spawnPrompt = prompt;
+        if (voiceTurn) {
+          try {
+            spawnPrompt = wrapVoicePrompt(prompt, voiceTurn);
+          } catch (err) {
+            sendJson(
+              res,
+              400,
+              { error: (err && err.message) || "Invalid voice turn" },
+              extraHeaders
+            );
+            return;
+          }
+        }
+
         const answerPairs = parseUserAnswersBlock(prompt);
         if (answerPairs && sessionId && !newSession) {
           const liveAsk = findActiveRunBySessionId(activeRuns, sessionId);
@@ -1580,7 +1718,7 @@ async function createServer({
         const runId = createSessionId();
         // Attach listeners immediately; runPrompt buffers early events.
         const emitter = runPrompt({
-          prompt,
+          prompt: spawnPrompt,
           sessionId: forcedId,
           cwd,
           model,
@@ -1590,6 +1728,7 @@ async function createServer({
           forkFrom: forkFrom || null,
           permissionMode,
           remote: remoteChat,
+          voiceTurn,
         });
         const record = registerRun(activeRuns, {
           runId,

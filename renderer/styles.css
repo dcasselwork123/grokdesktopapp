@@ -2092,6 +2092,43 @@ body.select-mode .session-item .check {
   cursor: default;
 }
 
+.btn-voice-mode {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  overflow: hidden;
+  transition: background 0.12s, opacity 0.12s, box-shadow 0.12s;
+}
+
+.btn-voice-mode canvas {
+  width: 36px;
+  height: 36px;
+  display: block;
+  pointer-events: none;
+}
+
+.btn-voice-mode:hover {
+  background: var(--bg-hover);
+}
+
+.btn-voice-mode[aria-pressed="true"] {
+  box-shadow: 0 0 0 1px rgba(40, 190, 210, 0.35), 0 0 12px rgba(224, 80, 90, 0.28);
+}
+
+.btn-voice-mode.hidden,
+.phone-ui .btn-voice-mode {
+  display: none !important;
+}
+
 .btn-mic {
   width: 36px;
   height: 36px;
@@ -2154,6 +2191,12 @@ body.select-mode .session-item .check {
 .voice-strip.transcribing {
   border-color: rgba(153, 102, 203, 0.28);
   background: var(--accent-soft);
+  color: var(--text);
+}
+
+.voice-strip.voice-mode {
+  border-color: rgba(40, 190, 210, 0.28);
+  background: rgba(40, 190, 210, 0.08);
   color: var(--text);
 }
 
@@ -3245,7 +3288,8 @@ body.select-mode .session-item .check {
   }
 
   body.phone-ui .access-selector,
-  body.phone-ui .folder-trust {
+  body.phone-ui .folder-trust,
+  body.phone-ui .btn-voice-mode {
     display: none !important;
   }
 

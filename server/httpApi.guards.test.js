@@ -56,6 +56,15 @@ test("other privileged POSTs are gated; GET login is not", () => {
   assert.strictEqual(isPrivilegedPost("GET", "/api/remote"), false);
 });
 
+test('isPrivilegedPost("POST", "/api/voice/arm") is true', () => {
+  assert.strictEqual(isPrivilegedPost("POST", "/api/voice/arm"), true);
+});
+
+test("voice TTS is not loopback-only; GET arm is not privileged", () => {
+  assert.strictEqual(isPrivilegedPost("POST", "/api/tts"), false);
+  assert.strictEqual(isPrivilegedPost("GET", "/api/voice/arm"), false);
+});
+
 test("isLoopbackRequest 127.0.0.1 is true", () => {
   assert.strictEqual(
     isLoopbackRequest({ socket: { remoteAddress: "127.0.0.1" } }),

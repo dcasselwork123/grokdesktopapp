@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; base-uri 'self'; form-action 'self'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; base-uri 'self'; form-action 'self'" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
   <meta name="color-scheme" content="dark light" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -221,6 +221,10 @@
             autocomplete="off"
             spellcheck="true"
           ></textarea>
+          <button type="button" id="btn-voice-mode" class="btn-voice-mode hidden"
+            title="Voice mode" aria-label="Voice mode" aria-pressed="false">
+            <canvas width="40" height="40" aria-hidden="true"></canvas>
+          </button>
           <button type="button" id="btn-mic" class="btn-mic hidden" title="Dictate" aria-label="Dictate" aria-pressed="false">
             <svg class="mic-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
               <rect x="9" y="3" width="6" height="11" rx="3" />
@@ -424,6 +428,7 @@
     </div>
   </div>
 
+  <script src="voice-orb.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

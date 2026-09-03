@@ -21,6 +21,7 @@ const { isSafeSessionId, resolveUnderSessionsRoot } = require("./sessionId");
 const { extractAskUserQuestions, shouldParkForAsk } = require("./sessionQuestions");
 const { continueSessionWithAnswers } = require("./grokAcp");
 const { searchSessions: searchSessionList } = require("./sessionSearch");
+const { appendVoiceSpawnArgs } = require("./voiceGate");
 
 function getGrokHome() {
   return process.env.GROK_HOME || path.join(os.homedir(), ".grok");
@@ -1074,6 +1075,7 @@ function runPrompt({
   forkFrom = null,
   permissionMode,
   remote = false,
+  voiceTurn = null,
 }) {
   const { emitter, emitBuffered } = createBufferedEmitter();
   refreshGrokBinary();
@@ -1190,6 +1192,7 @@ function runPrompt({
       );
       args.push("--debug-file", debugFile);
     }
+    appendVoiceSpawnArgs(args, voiceTurn);
     return args;
   }
 
@@ -1481,10 +1484,24 @@ function runPrompt({
   }
 
   function startChild({ resumeId, forkId, isResume, isFork, writeDebug }) {
-    const args = buildArgs({ resumeId, forkId, writeDebug });
+    let args;
+    try {
+      args = buildArgs({ resumeId, forkId, writeDebug });
+    } catch (err) {
+      debugLog(`voiceTurn args: ${err.message || err}`);
+      if (!finished) {
+        cleanupTempFile(promptFile);
+        process.nextTick(() => {
+          emitBuffered("error", err);
+          emitBuffered("end", { ok: false, error: String(err) });
+        });
+        finished = true;
+      }
+      return;
+    }
     debugLog(
       `spawn images=${imageList.length} newSession=${newSession} resume=${!!resumeId} ` +
-        `fork=${!!forkId} effort=${effort} permissionMode=${resolvedPermissionMode} cwd=${cwd} promptChars=${effectivePrompt.length} ` +
+        `fork=${!!forkId} effort=${effort} permissionMode=${resolvedPermissionMode} voiceTurn=${voiceTurn || "off"} cwd=${cwd} promptChars=${effectivePrompt.length} ` +
         `imgPaths=${imageList.map((i) => (typeof i === "string" ? i : i.path)).join("|")}`
     );
     let proc;
