@@ -109,7 +109,7 @@ Orb **left of the mic**. Desktop only (hidden on phone). Default **off**, not re
 When on:
 
 - Click-to-talk **auto-sends** (Voice off still fills the composer only).
-- Grok **speaks** planning replies (Rex, via `POST /api/tts` — proxied; key never hits the client).
+- Grok **speaks** planning replies (via `POST /api/tts` — proxied; key never hits the client). Voice and speed live under the DC account menu **⚙ Settings** (Altair is the Jarvis-like pick). Stored in `~/.grok-desktop/config.json` as `ttsVoice` / `ttsSpeed`.
 - Planning turns spawn with `--tools` allowlist (`read_file,list_dir,grep,web_search,todo_write`) plus `--no-subagents`. Typed Enter while Voice is on is also a planning turn.
 - Saying *go ahead / build it / make it so / …* shows an app **Build this now?** card. Confirm mints a loopback-only one-time arm token (`POST /api/voice/arm`) and starts a **new** full-access `grok -p` on the **same session**. Do not continue the planning process via ACP.
 - During that build: mute TTS, light tool beeps, then speak a short recap (`SPEAK:` or first sentences).

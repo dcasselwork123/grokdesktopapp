@@ -5,6 +5,7 @@ const path = require("path");
 const os = require("os");
 const { execFile, execFileSync } = require("child_process");
 const { randomBytes, X509Certificate } = require("crypto");
+const { normalizeVoice, clampTtsSpeed, DEFAULT_VOICE } = require("./textToSpeech");
 
 const CONFIG_DIR = path.join(os.homedir(), ".grok-desktop");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
@@ -134,6 +135,30 @@ function setThemePref(pref) {
   const next = normalizeThemePref(pref);
   const stored = loadConfig();
   stored.theme = next;
+  saveConfig(stored);
+  return next;
+}
+
+function getTtsVoice() {
+  return normalizeVoice(loadConfig().ttsVoice || DEFAULT_VOICE);
+}
+
+function setTtsVoice(voice) {
+  const next = normalizeVoice(voice);
+  const stored = loadConfig();
+  stored.ttsVoice = next;
+  saveConfig(stored);
+  return next;
+}
+
+function getTtsSpeed() {
+  return clampTtsSpeed(loadConfig().ttsSpeed);
+}
+
+function setTtsSpeed(speed) {
+  const next = clampTtsSpeed(speed);
+  const stored = loadConfig();
+  stored.ttsSpeed = next;
   saveConfig(stored);
   return next;
 }
@@ -774,6 +799,10 @@ module.exports = {
   normalizeThemePref,
   getThemePref,
   setThemePref,
+  getTtsVoice,
+  setTtsVoice,
+  getTtsSpeed,
+  setTtsSpeed,
   normalizeTailscaleDnsName,
   parseTailscaleStatus,
   detectTailscaleStatusSync,

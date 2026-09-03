@@ -71,7 +71,7 @@ Then open http://127.0.0.1:3847. The setup gate is the same.
 | **`/new`** | Fresh draft in the same folder |
 | **Images** | **+**, paste, or drag-and-drop (max 8). Re-encoded to JPEG on the client. Pictures Grok generates (`/imagine`) show in the chat |
 | **Voice** | Mic next to Send; [Grok Speech-to-Text](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text) fills the box **as you speak**. On the phone, use the **HTTPS** Tailscale URL (`https://….ts.net` — free Let’s Encrypt). Plain `http://100.x` cannot open the live mic; the button then asks for a Voice Memo / file |
-| **Voice mode** | Desktop orb left of the mic (off by default). Auto-sends, spoken replies, read-only planning until you confirm a build. Phone: orb hidden; dictation mic unchanged |
+| **Voice mode** | Desktop orb left of the mic (off by default). Auto-sends, spoken replies, read-only planning until you confirm a build. Voice and speed: DC menu **⚙**. Phone: orb hidden; dictation mic unchanged |
 | **Model / Effort** | Composer selectors, including a custom model picker |
 | **Usage** | Weekly usage pie in the composer; click for session context |
 | **Folder** | Desktop: native folder dialog. Phone: known project folders or the last desktop folder (not a free-form `C:\` path) |

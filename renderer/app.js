@@ -80,6 +80,12 @@
     btnAccountLoginX: $("#btn-account-login-x"),
     btnAccountLoginEmail: $("#btn-account-login-email"),
     btnAccountLogout: $("#btn-account-logout"),
+    btnAccountSettings: $("#btn-account-settings"),
+    accountSettings: $("#account-settings"),
+    ttsVoice: $("#tts-voice"),
+    ttsSpeed: $("#tts-speed"),
+    ttsSpeedValue: $("#tts-speed-value"),
+    btnTtsPreview: $("#btn-tts-preview"),
     themeToggle: $("#theme-toggle"),
     reconnectBanner: document.getElementById("reconnect-banner"),
     sessionBanner: document.getElementById("session-banner"),
@@ -156,6 +162,8 @@
     stickToBottom: true,
     permissionMode: "bypassPermissions",
     themePref: "dark",
+    ttsVoice: "rex",
+    ttsSpeed: 1,
     accessMenuOpen: false,
     seenFolders: [],
     seenFoldersLocal: [],
@@ -228,6 +236,20 @@
   const THEME_PREFS = (window.__grokTheme && window.__grokTheme.PREFS) || ["light", "dark", "system"];
   const THEME_DEFAULT = (window.__grokTheme && window.__grokTheme.DEFAULT) || "dark";
   const THEME_KEY = (window.__grokTheme && window.__grokTheme.KEY) || "grok_desktop_theme";
+  const TTS_VOICE_KEY = "grok_desktop_tts_voice";
+  const TTS_SPEED_KEY = "grok_desktop_tts_speed";
+  const TTS_VOICES = [
+    { id: "rex", label: "Rex — confident, clear" },
+    { id: "altair", label: "Altair — refined, Jarvis-like" },
+    { id: "leo", label: "Leo — authoritative" },
+    { id: "perseus", label: "Perseus — strong, formal" },
+    { id: "lux", label: "Lux — calm, understated" },
+    { id: "orion", label: "Orion — cinematic" },
+    { id: "ara", label: "Ara — warm" },
+    { id: "eve", label: "Eve — upbeat" },
+    { id: "sal", label: "Sal — smooth" },
+  ];
+  const TTS_VOICE_IDS = new Set(TTS_VOICES.map((v) => v.id));
   const MD_DEBOUNCE_MS = 64;
 
   function isMobileViewport() {
@@ -312,6 +334,76 @@
   }
 
   applyThemePref(readThemePref(), { persist: false });
+  applyTtsPrefs(readTtsPrefs(), { persist: false });
+
+  function normalizeTtsVoice(id) {
+    const raw = String(id || "").trim().toLowerCase();
+    return TTS_VOICE_IDS.has(raw) ? raw : "rex";
+  }
+
+  function clampTtsSpeed(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 1;
+    return Math.round(Math.min(1.5, Math.max(0.7, n)) * 20) / 20;
+  }
+
+  function readTtsPrefs() {
+    let voice = "rex";
+    let speed = 1;
+    try {
+      voice = normalizeTtsVoice(localStorage.getItem(TTS_VOICE_KEY) || "rex");
+      const storedSpeed = localStorage.getItem(TTS_SPEED_KEY);
+      if (storedSpeed != null) speed = clampTtsSpeed(storedSpeed);
+    } catch {
+      /* ignore */
+    }
+    return { voice, speed };
+  }
+
+  function applyTtsPrefs({ voice, speed } = {}, { persist = false } = {}) {
+    state.ttsVoice = normalizeTtsVoice(voice);
+    state.ttsSpeed = clampTtsSpeed(speed);
+    syncTtsSettingsUi();
+    if (persist) persistTtsPrefs();
+  }
+
+  function persistTtsPrefs() {
+    try {
+      localStorage.setItem(TTS_VOICE_KEY, state.ttsVoice);
+      localStorage.setItem(TTS_SPEED_KEY, String(state.ttsSpeed));
+    } catch {
+      /* ignore */
+    }
+    if (isPhoneUi() || (!isElectron() && !isLoopbackPage())) return;
+    api("/api/remote/settings", {
+      method: "POST",
+      body: JSON.stringify({ ttsVoice: state.ttsVoice, ttsSpeed: state.ttsSpeed }),
+    }).catch(() => {});
+  }
+
+  function syncTtsSettingsUi() {
+    if (els.ttsVoice) {
+      if (!els.ttsVoice.options.length) {
+        for (const v of TTS_VOICES) {
+          const opt = document.createElement("option");
+          opt.value = v.id;
+          opt.textContent = v.label;
+          els.ttsVoice.appendChild(opt);
+        }
+      }
+      els.ttsVoice.value = state.ttsVoice;
+    }
+    if (els.ttsSpeed) els.ttsSpeed.value = String(state.ttsSpeed);
+    if (els.ttsSpeedValue) {
+      els.ttsSpeedValue.textContent = `${state.ttsSpeed.toFixed(2)}×`;
+    }
+  }
+
+  function setAccountSettingsOpen(open) {
+    if (!els.accountSettings || !els.btnAccountSettings) return;
+    els.accountSettings.classList.toggle("hidden", !open);
+    els.btnAccountSettings.setAttribute("aria-expanded", open ? "true" : "false");
+  }
 
   if (window.matchMedia) {
     const schemeMq = window.matchMedia("(prefers-color-scheme: light)");
@@ -6590,7 +6682,11 @@
     const res = await fetch(apiUrl("/api/tts"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: t, voice: "rex" }),
+      body: JSON.stringify({
+        text: t,
+        voice: state.ttsVoice || "rex",
+        speed: state.ttsSpeed || 1,
+      }),
     });
     if (!res.ok) {
       let msg = res.statusText;
@@ -6615,6 +6711,8 @@
     vm.blobUrl = url;
     await new Promise((resolve, reject) => {
       const audio = new Audio(url);
+      audio.preservesPitch = true;
+      audio.playbackRate = clampTtsSpeed(state.ttsSpeed);
       vm.audio = audio;
       const done = (err) => {
         audio.onended = null;
@@ -7319,6 +7417,37 @@
       logoutAccount();
     });
   }
+  if (els.btnAccountSettings) {
+    els.btnAccountSettings.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const open = els.accountSettings && els.accountSettings.classList.contains("hidden");
+      setAccountSettingsOpen(open);
+      if (open) syncTtsSettingsUi();
+    });
+  }
+  if (els.ttsVoice) {
+    els.ttsVoice.addEventListener("change", () => {
+      applyTtsPrefs({ voice: els.ttsVoice.value, speed: state.ttsSpeed }, { persist: true });
+    });
+  }
+  if (els.ttsSpeed) {
+    els.ttsSpeed.addEventListener("input", () => {
+      applyTtsPrefs({ voice: state.ttsVoice, speed: els.ttsSpeed.value }, { persist: false });
+    });
+    els.ttsSpeed.addEventListener("change", () => {
+      applyTtsPrefs({ voice: state.ttsVoice, speed: els.ttsSpeed.value }, { persist: true });
+    });
+  }
+  if (els.btnTtsPreview) {
+    els.btnTtsPreview.addEventListener("click", () => {
+      state.voiceMode.unlocked = true;
+      stopTts();
+      void playTtsChunk("At your service, sir.").catch((err) => {
+        setStatus(false, (err && err.message) || "Preview failed");
+      });
+    });
+  }
+
   if (els.themeToggle) {
     els.themeToggle.addEventListener("click", (e) => {
       const btn = e.target.closest("[data-theme-pref]");
@@ -7488,6 +7617,7 @@
     els.accountPopover.classList.toggle("hidden", !open);
     els.accountPopover.setAttribute("aria-hidden", open ? "false" : "true");
     els.btnAccount.setAttribute("aria-expanded", open ? "true" : "false");
+    if (!open) setAccountSettingsOpen(false);
     if (els.accountPopHint && !open) els.accountPopHint.textContent = "";
     if (open && isPhoneUi() && els.accountPopHint) {
       const auth = (state.setup && state.setup.auth) || {};

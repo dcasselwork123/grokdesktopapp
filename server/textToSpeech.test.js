@@ -1,7 +1,13 @@
 "use strict";
 
 const assert = require("assert");
-const { synthesizeSpeech, redactSecrets, MAX_TTS_CHARS } = require("./textToSpeech");
+const {
+  synthesizeSpeech,
+  redactSecrets,
+  MAX_TTS_CHARS,
+  normalizeVoice,
+  clampTtsSpeed,
+} = require("./textToSpeech");
 
 let failed = 0;
 
@@ -72,6 +78,7 @@ async function main() {
         const body = JSON.parse(opts.body);
         assert.strictEqual(body.voice_id, "rex");
         assert.strictEqual(body.text, "Hello sir.");
+        assert.strictEqual(body.speed, 1);
         return {
           ok: true,
           status: 200,
@@ -93,6 +100,19 @@ async function main() {
   await test("redactSecrets strips the key from error text", () => {
     const key = "xai-super-secret";
     assert.strictEqual(redactSecrets(`fail ${key} end`, key), "fail [redacted] end");
+  });
+
+  await test("normalizeVoice falls back to rex; altair is allowed", () => {
+    assert.strictEqual(normalizeVoice("Altair"), "altair");
+    assert.strictEqual(normalizeVoice("nope"), "rex");
+    assert.strictEqual(normalizeVoice(""), "rex");
+  });
+
+  await test("clampTtsSpeed stays in 0.7–1.5", () => {
+    assert.strictEqual(clampTtsSpeed(1), 1);
+    assert.strictEqual(clampTtsSpeed(0.2), 0.7);
+    assert.strictEqual(clampTtsSpeed(9), 1.5);
+    assert.strictEqual(clampTtsSpeed("1.25"), 1.25);
   });
 
   await test("overlong text is 400", async () => {

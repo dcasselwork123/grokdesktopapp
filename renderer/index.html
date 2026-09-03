@@ -108,6 +108,38 @@
                   <div id="account-pop-name" class="account-pop-name">Not signed in</div>
                   <div id="account-pop-email" class="account-pop-email"></div>
                 </div>
+                <button
+                  type="button"
+                  id="btn-account-settings"
+                  class="account-settings-cog"
+                  title="Settings"
+                  aria-label="Settings"
+                  aria-expanded="false"
+                  aria-controls="account-settings"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.6.9 1 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+                  </svg>
+                </button>
+              </div>
+              <div id="account-settings" class="account-settings hidden">
+                <div class="account-pop-theme-label">Voice</div>
+                <select id="tts-voice" class="account-settings-select" aria-label="Spoken voice"></select>
+                <div class="account-pop-theme-label account-settings-speed-label">
+                  Speed <span id="tts-speed-value">1.00×</span>
+                </div>
+                <input
+                  type="range"
+                  id="tts-speed"
+                  class="account-settings-slider"
+                  min="0.7"
+                  max="1.5"
+                  step="0.05"
+                  value="1"
+                  aria-label="Voice speed"
+                />
+                <button type="button" id="btn-tts-preview" class="account-pop-item">Preview voice</button>
               </div>
               <div class="account-pop-theme">
                 <div class="account-pop-theme-label" id="theme-toggle-label">Appearance</div>

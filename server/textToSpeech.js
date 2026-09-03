@@ -5,6 +5,23 @@ const { getAccountAccessKey } = require("./grokService");
 const TTS_URL = "https://api.x.ai/v1/tts";
 const MAX_TTS_CHARS = 2000;
 const DEFAULT_VOICE = "rex";
+const MIN_TTS_SPEED = 0.7;
+const MAX_TTS_SPEED = 1.5;
+const DEFAULT_TTS_SPEED = 1;
+
+const TTS_VOICES = [
+  { id: "rex", label: "Rex — confident, clear" },
+  { id: "altair", label: "Altair — refined, Jarvis-like" },
+  { id: "leo", label: "Leo — authoritative" },
+  { id: "perseus", label: "Perseus — strong, formal" },
+  { id: "lux", label: "Lux — calm, understated" },
+  { id: "orion", label: "Orion — cinematic" },
+  { id: "ara", label: "Ara — warm" },
+  { id: "eve", label: "Eve — upbeat" },
+  { id: "sal", label: "Sal — smooth" },
+];
+
+const TTS_VOICE_IDS = new Set(TTS_VOICES.map((v) => v.id));
 
 function ttsError(status, message, code) {
   const err = new Error(message);
@@ -27,10 +44,18 @@ function redactSecrets(text, key) {
 
 function normalizeVoice(voice) {
   const raw = String(voice || DEFAULT_VOICE).trim().toLowerCase();
-  return raw || DEFAULT_VOICE;
+  if (TTS_VOICE_IDS.has(raw)) return raw;
+  return DEFAULT_VOICE;
 }
 
-async function synthesizeSpeech({ text, voice, fetchImpl } = {}) {
+function clampTtsSpeed(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_TTS_SPEED;
+  const clamped = Math.min(MAX_TTS_SPEED, Math.max(MIN_TTS_SPEED, n));
+  return Math.round(clamped * 20) / 20;
+}
+
+async function synthesizeSpeech({ text, voice, speed, fetchImpl } = {}) {
   const t = String(text || "").trim();
   if (!t) throw ttsError(400, "Text is required", "NO_TEXT");
   if (t.length > MAX_TTS_CHARS) throw ttsError(400, "Text is too long", "TEXT_TOO_LONG");
@@ -39,6 +64,7 @@ async function synthesizeSpeech({ text, voice, fetchImpl } = {}) {
   if (!key) throw ttsError(401, "Not signed in", "NO_KEY");
 
   const voiceId = normalizeVoice(voice);
+  const rate = clampTtsSpeed(speed);
   const fetchFn = fetchImpl || fetch;
   let res;
   try {
@@ -53,6 +79,7 @@ async function synthesizeSpeech({ text, voice, fetchImpl } = {}) {
         text: t,
         voice_id: voiceId,
         language: "en",
+        speed: rate,
       }),
     });
   } catch (err) {
@@ -92,7 +119,13 @@ module.exports = {
   TTS_URL,
   MAX_TTS_CHARS,
   DEFAULT_VOICE,
+  MIN_TTS_SPEED,
+  MAX_TTS_SPEED,
+  DEFAULT_TTS_SPEED,
+  TTS_VOICES,
   getTtsApiKey,
+  normalizeVoice,
+  clampTtsSpeed,
   synthesizeSpeech,
   redactSecrets,
 };

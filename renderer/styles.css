@@ -897,7 +897,7 @@ body.select-mode .session-item .check {
   position: absolute;
   left: 0;
   bottom: calc(100% + 8px);
-  width: 256px;
+  width: 272px;
   padding: 10px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -959,6 +959,70 @@ body.select-mode .session-item .check {
 
 .account-pop-email:empty {
   display: none;
+}
+
+.account-settings-cog {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.account-settings-cog:hover,
+.account-settings-cog:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text);
+  outline: none;
+}
+
+.account-settings-cog[aria-expanded="true"] {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+
+.account-settings {
+  padding: 2px 4px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 8px;
+}
+
+.account-settings.hidden {
+  display: none;
+}
+
+.account-settings-select {
+  width: 100%;
+  margin: 0 0 10px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.account-settings-speed-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.account-settings-slider {
+  width: 100%;
+  margin: 0 0 6px;
+  accent-color: var(--accent);
+}
+
+.phone-ui .account-settings-cog,
+.phone-ui .account-settings {
+  display: none !important;
 }
 
 .account-pop-theme {

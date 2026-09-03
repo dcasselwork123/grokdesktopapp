@@ -32,7 +32,7 @@ const {
   normalizeRelMedia,
 } = require("./sessionMedia");
 const { transcribeAudio, createLiveTranscriber, decodePcmPayload } = require("./speechToText");
-const { synthesizeSpeech } = require("./textToSpeech");
+const { synthesizeSpeech, TTS_VOICES } = require("./textToSpeech");
 const {
   createArmToken,
   consumeArmToken,
@@ -61,6 +61,10 @@ const {
   setPermissionMode,
   getThemePref,
   setThemePref,
+  getTtsVoice,
+  setTtsVoice,
+  getTtsSpeed,
+  setTtsSpeed,
 } = require("./remoteAccess");
 const { isSafeSessionId } = require("./sessionId");
 const { getUpdateStatus, applyAppUpdate } = require("./appUpdate");
@@ -975,6 +979,9 @@ async function createServer({
           payload.seenFolders = getSeenFolders();
           payload.permissionMode = getPermissionMode();
           payload.theme = getThemePref();
+          payload.ttsVoice = getTtsVoice();
+          payload.ttsSpeed = getTtsSpeed();
+          payload.ttsVoices = TTS_VOICES;
           sendJson(res, 200, payload, extraHeaders);
         } else {
           sendJson(res, 200, toPublicRemoteInfo(info), extraHeaders);
@@ -1005,10 +1012,19 @@ async function createServer({
         if (typeof body.theme === "string") {
           setThemePref(body.theme.trim());
         }
+        if (typeof body.ttsVoice === "string") {
+          setTtsVoice(body.ttsVoice.trim());
+        }
+        if (body.ttsSpeed != null) {
+          setTtsSpeed(body.ttsSpeed);
+        }
         const payload = toLoopbackRemoteInfo(await rebind());
         payload.seenFolders = getSeenFolders();
         payload.permissionMode = getPermissionMode();
         payload.theme = getThemePref();
+        payload.ttsVoice = getTtsVoice();
+        payload.ttsSpeed = getTtsSpeed();
+        payload.ttsVoices = TTS_VOICES;
         sendJson(res, 200, payload, extraHeaders);
         return;
       }
@@ -1024,6 +1040,9 @@ async function createServer({
         payload.seenFolders = getSeenFolders();
         payload.permissionMode = getPermissionMode();
         payload.theme = getThemePref();
+        payload.ttsVoice = getTtsVoice();
+        payload.ttsSpeed = getTtsSpeed();
+        payload.ttsVoices = TTS_VOICES;
         sendJson(res, 200, payload, extraHeaders);
         return;
       }
@@ -1480,7 +1499,8 @@ async function createServer({
         try {
           const result = await synthesizeSpeech({
             text: body.text || body.prompt || "",
-            voice: body.voice || "rex",
+            voice: body.voice || getTtsVoice(),
+            speed: body.speed != null ? body.speed : getTtsSpeed(),
           });
           sendBytes(res, 200, result.audio, result.contentType, extraHeaders);
         } catch (err) {
