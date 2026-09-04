@@ -85,6 +85,8 @@
     ttsVoice: $("#tts-voice"),
     ttsSpeed: $("#tts-speed"),
     ttsSpeedValue: $("#tts-speed-value"),
+    audioInput: $("#audio-input"),
+    audioOutput: $("#audio-output"),
     btnTtsPreview: $("#btn-tts-preview"),
     themeToggle: $("#theme-toggle"),
     reconnectBanner: document.getElementById("reconnect-banner"),
@@ -164,6 +166,9 @@
     themePref: "dark",
     ttsVoice: "rex",
     ttsSpeed: 1,
+    audioInputId: "",
+    audioOutputId: "",
+    audioDevices: { inputs: [], outputs: [] },
     accessMenuOpen: false,
     seenFolders: [],
     seenFoldersLocal: [],
@@ -238,6 +243,9 @@
   const THEME_KEY = (window.__grokTheme && window.__grokTheme.KEY) || "grok_desktop_theme";
   const TTS_VOICE_KEY = "grok_desktop_tts_voice";
   const TTS_SPEED_KEY = "grok_desktop_tts_speed";
+  const AUDIO_INPUT_KEY = "grok_desktop_audio_input";
+  const AUDIO_OUTPUT_KEY = "grok_desktop_audio_output";
+  const SYSTEM_AUDIO_DEVICE = "";
   const TTS_VOICES = [
     { id: "rex", label: "Rex — confident, clear" },
     { id: "altair", label: "Altair — refined, Jarvis-like" },
@@ -403,6 +411,192 @@
     if (!els.accountSettings || !els.btnAccountSettings) return;
     els.accountSettings.classList.toggle("hidden", !open);
     els.btnAccountSettings.setAttribute("aria-expanded", open ? "true" : "false");
+    if (els.accountPopover) {
+      els.accountPopover.classList.toggle("settings-open", !!open);
+      els.accountPopover.setAttribute("aria-label", open ? "Settings" : "Account");
+    }
+    if (open) void refreshAudioDevices({ requestAccess: true });
+  }
+
+  function normalizeAudioDeviceId(id) {
+    const raw = String(id || "").trim();
+    if (!raw || raw.length > 256) return SYSTEM_AUDIO_DEVICE;
+    return raw;
+  }
+
+  function readAudioDevicePrefs() {
+    let input = SYSTEM_AUDIO_DEVICE;
+    let output = SYSTEM_AUDIO_DEVICE;
+    try {
+      input = normalizeAudioDeviceId(localStorage.getItem(AUDIO_INPUT_KEY) || "");
+      output = normalizeAudioDeviceId(localStorage.getItem(AUDIO_OUTPUT_KEY) || "");
+    } catch {
+      /* ignore */
+    }
+    return { input, output };
+  }
+
+  function persistAudioDevicePrefs() {
+    try {
+      if (state.audioInputId) localStorage.setItem(AUDIO_INPUT_KEY, state.audioInputId);
+      else localStorage.removeItem(AUDIO_INPUT_KEY);
+      if (state.audioOutputId) localStorage.setItem(AUDIO_OUTPUT_KEY, state.audioOutputId);
+      else localStorage.removeItem(AUDIO_OUTPUT_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function applyAudioDevicePrefs({ input, output } = {}, { persist = false } = {}) {
+    if (input !== undefined) state.audioInputId = normalizeAudioDeviceId(input);
+    if (output !== undefined) state.audioOutputId = normalizeAudioDeviceId(output);
+    syncAudioDeviceUi();
+    void applyAudioOutputToLive();
+    if (persist) persistAudioDevicePrefs();
+  }
+
+  function deviceIsKnown(list, id) {
+    return !!(id && Array.isArray(list) && list.some((d) => d.deviceId === id));
+  }
+
+  function resolvedAudioInputId() {
+    const id = state.audioInputId;
+    if (!id) return SYSTEM_AUDIO_DEVICE;
+    if (state.audioDevices.inputs.length && !deviceIsKnown(state.audioDevices.inputs, id)) {
+      return SYSTEM_AUDIO_DEVICE;
+    }
+    return id;
+  }
+
+  function resolvedAudioOutputId() {
+    const id = state.audioOutputId;
+    if (!id) return SYSTEM_AUDIO_DEVICE;
+    if (state.audioDevices.outputs.length && !deviceIsKnown(state.audioDevices.outputs, id)) {
+      return SYSTEM_AUDIO_DEVICE;
+    }
+    return id;
+  }
+
+  function micAudioConstraints() {
+    const audio = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      channelCount: 1,
+    };
+    const id = resolvedAudioInputId();
+    if (id) audio.deviceId = { ideal: id };
+    return audio;
+  }
+
+  function fillAudioDeviceSelect(select, devices, selectedId, kind) {
+    if (!select) return;
+    const opts = [];
+    const def = document.createElement("option");
+    def.value = SYSTEM_AUDIO_DEVICE;
+    def.textContent = "System default";
+    opts.push(def);
+    for (const d of devices) {
+      const opt = document.createElement("option");
+      opt.value = d.deviceId;
+      opt.textContent = d.label || (kind === "audioinput" ? "Microphone" : "Speaker");
+      opt.title = opt.textContent;
+      opts.push(opt);
+    }
+    if (selectedId && !devices.some((d) => d.deviceId === selectedId)) {
+      const missing = document.createElement("option");
+      missing.value = selectedId;
+      missing.textContent = "Not connected";
+      opts.push(missing);
+    }
+    select.replaceChildren(...opts);
+    select.value = selectedId || SYSTEM_AUDIO_DEVICE;
+    if (select.value !== (selectedId || SYSTEM_AUDIO_DEVICE)) {
+      select.value = SYSTEM_AUDIO_DEVICE;
+    }
+  }
+
+  function syncAudioDeviceUi() {
+    fillAudioDeviceSelect(els.audioInput, state.audioDevices.inputs, state.audioInputId, "audioinput");
+    fillAudioDeviceSelect(els.audioOutput, state.audioDevices.outputs, state.audioOutputId, "audiooutput");
+  }
+
+  async function refreshAudioDevices({ requestAccess = false } = {}) {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== "function") {
+      state.audioDevices = { inputs: [], outputs: [] };
+      syncAudioDeviceUi();
+      return;
+    }
+    let list = [];
+    try {
+      list = await navigator.mediaDevices.enumerateDevices();
+    } catch {
+      list = [];
+    }
+    const unlabeled = list.some(
+      (d) => (d.kind === "audioinput" || d.kind === "audiooutput") && d.deviceId && !d.label
+    );
+    if (requestAccess && unlabeled && state.voice.phase !== "recording") {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: micAudioConstraints() });
+        for (const track of stream.getTracks()) {
+          try {
+            track.stop();
+          } catch {
+            /* ignore */
+          }
+        }
+        list = await navigator.mediaDevices.enumerateDevices();
+      } catch {
+        /* labels may stay empty until the mic is used */
+      }
+    }
+    const usable = (d) => d && d.deviceId && d.deviceId !== "default" && d.deviceId !== "communications";
+    state.audioDevices = {
+      inputs: list.filter((d) => d.kind === "audioinput" && usable(d)),
+      outputs: list.filter((d) => d.kind === "audiooutput" && usable(d)),
+    };
+    syncAudioDeviceUi();
+  }
+
+  async function setMediaSink(el) {
+    if (!el || typeof el.setSinkId !== "function") return;
+    const id = resolvedAudioOutputId();
+    try {
+      await el.setSinkId(id);
+    } catch {
+      try {
+        await el.setSinkId("");
+      } catch {
+        /* keep browser default */
+      }
+    }
+  }
+
+  function applySinkToAudioContext(ctx) {
+    if (!ctx || typeof ctx.setSinkId !== "function") return;
+    const id = resolvedAudioOutputId();
+    const current = typeof ctx.sinkId === "string" ? ctx.sinkId : "";
+    if (current === id) return;
+    Promise.resolve(ctx.setSinkId(id)).catch(() => {
+      Promise.resolve(ctx.setSinkId("")).catch(() => {});
+    });
+  }
+
+  async function applyAudioOutputToLive() {
+    if (state.voiceMode.audio) await setMediaSink(state.voiceMode.audio);
+    applySinkToAudioContext(state.voiceMode.beepCtx);
+  }
+
+  applyAudioDevicePrefs(readAudioDevicePrefs(), { persist: false });
+  void refreshAudioDevices({ requestAccess: false });
+  if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === "function") {
+    navigator.mediaDevices.addEventListener("devicechange", () => {
+      void refreshAudioDevices({ requestAccess: false });
+    });
+  } else if (navigator.mediaDevices) {
+    navigator.mediaDevices.ondevicechange = () => {
+      void refreshAudioDevices({ requestAccess: false });
+    };
   }
 
   if (window.matchMedia) {
@@ -5993,11 +6187,7 @@
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          channelCount: 1,
-        },
+        audio: micAudioConstraints(),
       });
     } catch (err) {
       if (voiceFileSupported()) {
@@ -6726,9 +6916,17 @@
       vm.ttsResolve = doneOk;
       audio.onended = doneOk;
       audio.onerror = () => done(new Error("Speech playback failed"));
-      const p = audio.play();
-      if (p && typeof p.then === "function") {
-        p.catch((err) => done(err));
+      const start = () => {
+        const p = audio.play();
+        if (p && typeof p.then === "function") {
+          p.catch((err) => done(err));
+        }
+      };
+      const sink = setMediaSink(audio);
+      if (sink && typeof sink.then === "function") {
+        sink.then(start, start);
+      } else {
+        start();
       }
     });
   }
@@ -6738,6 +6936,7 @@
     if (!AC) return null;
     if (!state.voiceMode.beepCtx) state.voiceMode.beepCtx = new AC();
     const ctx = state.voiceMode.beepCtx;
+    applySinkToAudioContext(ctx);
     if (ctx.state === "suspended") {
       try {
         ctx.resume();
@@ -7423,6 +7622,16 @@
       const open = els.accountSettings && els.accountSettings.classList.contains("hidden");
       setAccountSettingsOpen(open);
       if (open) syncTtsSettingsUi();
+    });
+  }
+  if (els.audioInput) {
+    els.audioInput.addEventListener("change", () => {
+      applyAudioDevicePrefs({ input: els.audioInput.value }, { persist: true });
+    });
+  }
+  if (els.audioOutput) {
+    els.audioOutput.addEventListener("change", () => {
+      applyAudioDevicePrefs({ output: els.audioOutput.value }, { persist: true });
     });
   }
   if (els.ttsVoice) {

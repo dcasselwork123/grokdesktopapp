@@ -373,17 +373,17 @@ function installMediaPermissions() {
     return isAllowedApiNavigation(url);
   };
   ses.setPermissionRequestHandler((wc, permission, callback, details) => {
-    if (permission === "media" || permission === "mediaKeySystem") {
+    if (permission === "media" || permission === "speaker-selection") {
       const url =
         (details && details.requestingUrl) || (wc && !wc.isDestroyed() && wc.getURL()) || "";
-      callback(permission === "media" && allowForUrl(url));
+      callback(allowForUrl(url));
       return;
     }
     callback(false);
   });
   if (typeof ses.setPermissionCheckHandler === "function") {
     ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details) => {
-      if (permission === "media" || permission === "microphone") {
+      if (permission === "media" || permission === "microphone" || permission === "speaker-selection") {
         const url =
           requestingOrigin ||
           (details && details.requestingUrl) ||

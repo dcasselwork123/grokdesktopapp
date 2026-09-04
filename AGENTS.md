@@ -95,7 +95,7 @@ Claude Desktop–style **mic** next to Send. Click to record, click again to sto
 | **Fallback** | If the live stream returns nothing, batch `POST /api/stt` still transcribes the clip |
 | **Auth** | Same `~/.grok/auth.json` access key as billing (`getAccountAccessKey`), or `XAI_API_KEY`. Never expose the key to the client. |
 | **Audio** | Live: 16 kHz PCM16 chunks (~100 ms). Skip near-silent frames so endpointing does not re-commit the same sentence. Phone file fallback: Voice Memo / audio file via `POST /api/stt`. Do not persist clips. |
-| **Desktop** | Electron must allow `media` / microphone for the API origin (`electron/main.js` → `installMediaPermissions`) |
+| **Desktop** | Electron must allow `media` / microphone and `speaker-selection` for the API origin (`electron/main.js` → `installMediaPermissions`) |
 | **Phone** | Prefer the **HTTPS** phone URL (`https://*.ts.net`, free Tailscale/Let’s Encrypt). Then the live mic works in Chrome/Safari, including “desktop site” / home-screen mode. On plain `http://100.x` the browser will not open the mic; the button falls back to a file picker. |
 
 Max clip ~3 minutes / 8 MB. Empty transcript → “Didn’t catch that”.
@@ -109,7 +109,8 @@ Orb **left of the mic**. Desktop only (hidden on phone). Default **off**, not re
 When on:
 
 - Click-to-talk **auto-sends** (Voice off still fills the composer only).
-- Grok **speaks** planning replies (via `POST /api/tts` — proxied; key never hits the client). Voice and speed live under the DC account menu **⚙ Settings** (Altair is the Jarvis-like pick). Stored in `~/.grok-desktop/config.json` as `ttsVoice` / `ttsSpeed`.
+- Grok **speaks** planning replies (via `POST /api/tts` — proxied; key never hits the client). Voice, speed, microphone, and speakers live under the DC account menu **⚙ Settings** (Altair is the Jarvis-like pick). The cog panel is settings-only — appearance and switch-account stay on the main account menu.
+- Voice/speed are stored in `~/.grok-desktop/config.json` as `ttsVoice` / `ttsSpeed`. Mic/speaker default to the Windows (OS) devices; a picked device is stored locally in the renderer.
 - Planning turns spawn with `--tools` allowlist (`read_file,list_dir,grep,web_search,todo_write`) plus `--no-subagents`. Typed Enter while Voice is on is also a planning turn.
 - Saying *go ahead / build it / make it so / …* shows an app **Build this now?** card. Confirm mints a loopback-only one-time arm token (`POST /api/voice/arm`) and starts a **new** full-access `grok -p` on the **same session**. Do not continue the planning process via ACP.
 - During that build: mute TTS, light tool beeps, then speak a short recap (`SPEAK:` or first sentences).

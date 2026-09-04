@@ -71,7 +71,7 @@ Then open http://127.0.0.1:3847. The setup gate is the same.
 | **`/new`** | Fresh draft in the same folder |
 | **Images** | **+**, paste, or drag-and-drop (max 8). Re-encoded to JPEG on the client. Pictures Grok generates (`/imagine`) show in the chat |
 | **Voice** | Mic next to Send; [Grok Speech-to-Text](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text) fills the box **as you speak**. On the phone, use the **HTTPS** Tailscale URL (`https://….ts.net` — free Let’s Encrypt). Plain `http://100.x` cannot open the live mic; the button then asks for a Voice Memo / file |
-| **Voice mode** | Desktop orb left of the mic (off by default). Auto-sends, spoken replies, read-only planning until you confirm a build. Voice and speed: DC menu **⚙**. Phone: orb hidden; dictation mic unchanged |
+| **Voice mode** | Desktop orb left of the mic (off by default). Auto-sends, spoken replies, read-only planning until you confirm a build. Voice, speed, mic, and speakers: DC menu **⚙**. Phone: orb hidden; dictation mic unchanged |
 | **Model / Effort** | Composer selectors, including a custom model picker |
 | **Usage** | Weekly usage pie in the composer; click for session context |
 | **Folder** | Desktop: native folder dialog. Phone: known project folders or the last desktop folder (not a free-form `C:\` path) |
@@ -125,7 +125,7 @@ The setting is stored in `~/.grok-desktop/config.json` as `permissionMode`. Chan
 
 **Window chrome:** the Electron window only navigates to the local API origin (`http://127.0.0.1:<port>` / `localhost`). Markdown / context-menu links open in the system browser **only** if they are `http:` or `https:` — `file:`, `javascript:`, `data:`, and custom protocols are denied. The page has a Content-Security-Policy of `default-src 'self'` (images may be `data:` / `blob:`; styles may be inline; no inline scripts).
 
-**Voice mode (desktop):** the orb left of the mic turns on click-to-talk auto-send and spoken replies. Planning turns can only read/search; a **Build this now?** card (or a spoken “go ahead”) starts one full-access turn on the same chat. The phone cannot arm a build. This is not a sandbox against a hostile repo.
+**Voice mode (desktop):** the orb left of the mic turns on click-to-talk auto-send and spoken replies. Planning turns can only read/search; a **Build this now?** card (or a spoken “go ahead”) starts one full-access turn on the same chat. Pick voice, speed, microphone, and speakers under the account **⚙** (defaults follow Windows). The phone cannot arm a build. This is not a sandbox against a hostile repo.
 
 **Honest limit:** a repo you asked Grok to work in can still inject via README, issues, or images. These controls shrink blast radius. They do **not** delete the agent problem.
 
