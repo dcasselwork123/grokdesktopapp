@@ -477,15 +477,49 @@
     return id;
   }
 
-  function micAudioConstraints() {
+  function micAudioConstraints({ withDevice = true } = {}) {
     const audio = {
-      echoCancellation: true,
-      noiseSuppression: true,
-      channelCount: 1,
+      echoCancellation: { ideal: true },
+      noiseSuppression: { ideal: true },
+      channelCount: { ideal: 1 },
     };
-    const id = resolvedAudioInputId();
+    const id = withDevice ? resolvedAudioInputId() : SYSTEM_AUDIO_DEVICE;
     if (id) audio.deviceId = { ideal: id };
     return audio;
+  }
+
+  function micErrorMessage(err) {
+    const name = err && err.name;
+    if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+      return "Microphone permission denied";
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+      return "No microphone found";
+    }
+    if (name === "NotReadableError" || name === "TrackStartError") {
+      return "Microphone is in use by another app";
+    }
+    if (name === "OverconstrainedError") {
+      return "Could not open the selected microphone — try System default in Settings";
+    }
+    return (err && err.message) || "Could not open microphone";
+  }
+
+  async function openMicStream() {
+    const attempts = [{ audio: micAudioConstraints({ withDevice: true }) }];
+    if (resolvedAudioInputId()) {
+      attempts.push({ audio: micAudioConstraints({ withDevice: false }) });
+    }
+    attempts.push({ audio: true });
+    let lastErr = null;
+    for (const constraints of attempts) {
+      try {
+        return await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr || new Error("Could not open microphone");
   }
 
   function fillAudioDeviceSelect(select, devices, selectedId, kind) {
@@ -6186,22 +6220,9 @@
 
     let stream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: micAudioConstraints(),
-      });
+      stream = await openMicStream();
     } catch (err) {
-      if (voiceFileSupported()) {
-        startFileVoice();
-        return;
-      }
-      const name = err && err.name;
-      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
-        setStatus(false, "Microphone permission denied");
-      } else if (name === "NotFoundError") {
-        setStatus(false, "No microphone found");
-      } else {
-        setStatus(false, (err && err.message) || "Could not open microphone");
-      }
+      setStatus(false, micErrorMessage(err));
       return;
     }
 
@@ -6214,10 +6235,6 @@
         } catch {
           /* ignore */
         }
-      }
-      if (voiceFileSupported()) {
-        startFileVoice();
-        return;
       }
       setStatus(false, (err && err.message) || "Could not start live transcription");
       return;
