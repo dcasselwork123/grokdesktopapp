@@ -2179,8 +2179,8 @@ body.select-mode .session-item .check {
   height: 36px;
   padding: 0;
   border-radius: 50%;
-  border: 1px solid rgba(224, 80, 90, 0.35);
-  background: rgba(40, 20, 28, 0.55);
+  border: 1px solid rgba(255, 90, 50, 0.32);
+  background: #07070a;
   color: var(--text-muted);
   display: inline-flex;
   align-items: center;
@@ -2192,21 +2192,24 @@ body.select-mode .session-item .check {
 }
 
 .btn-voice-mode canvas {
-  width: 36px;
-  height: 36px;
+  width: 100%;
+  height: 100%;
   display: block;
   pointer-events: none;
 }
 
 .btn-voice-mode:hover {
-  background: rgba(70, 28, 36, 0.8);
-  border-color: rgba(40, 190, 210, 0.45);
+  background: #0a0a10;
+  border-color: rgba(48, 180, 230, 0.55);
 }
 
 .btn-voice-mode[aria-pressed="true"] {
-  border-color: rgba(40, 190, 210, 0.7);
-  background: rgba(40, 24, 32, 0.9);
-  box-shadow: 0 0 0 1px rgba(40, 190, 210, 0.45), 0 0 14px rgba(224, 80, 90, 0.45);
+  border-color: rgba(48, 190, 230, 0.72);
+  background: #050508;
+  box-shadow:
+    0 0 0 1px rgba(48, 190, 230, 0.35),
+    0 0 12px rgba(255, 90, 45, 0.4),
+    0 0 16px rgba(40, 170, 230, 0.28);
 }
 
 .btn-voice-mode.hidden,
